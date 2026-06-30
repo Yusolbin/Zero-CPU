@@ -16,6 +16,10 @@ add_library(zero_cpu_core
     src/core/RegisterFile.cpp
     src/core/Memory.cpp
     src/core/CPUState.cpp
+
+    src/isa/Opcode.cpp
+    src/isa/Operand.cpp
+    src/isa/Instruction.cpp
 )
 
 target_include_directories(zero_cpu_core
