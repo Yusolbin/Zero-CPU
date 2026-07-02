@@ -9,10 +9,19 @@
 
 namespace {
 
-void printProgram(const std::vector<zero_cpu::Instruction>& program) {
+void printProgram(
+    const std::vector<zero_cpu::Instruction>& program,
+    const zero_cpu::CPU::LabelTable& labels
+) {
     std::cout << "=== Zero-CPU Program ===\n";
 
     for (std::size_t i = 0; i < program.size(); ++i) {
+        for (const auto& entry : labels) {
+            if (entry.second == i) {
+                std::cout << entry.first << ":\n";
+            }
+        }
+
         std::cout << "[" << i << "] "
                   << program[i].toString()
                   << "\n";
@@ -44,11 +53,14 @@ void runStepByStep(zero_cpu::CPU& cpu) {
         cpu.step();
 
         std::cout << cpu.state().summary();
-        std::cout << "Memory[96..103]: "
-                  << cpu.state().memory().dumpRange(96, 8)
-                  << "\n\n";
+        std::cout << "\n";
 
         ++stepCount;
+
+        if (stepCount > 100) {
+            std::cout << "Step limit reached in CLI test.\n";
+            break;
+        }
     }
 }
 
@@ -61,60 +73,53 @@ int main() {
         Instruction(
             Opcode::MOV,
             Operand::registerOperand(RegisterName::R1),
-            Operand::immediate(123)
+            Operand::immediate(0)
         ),
 
         Instruction(
-            Opcode::STORE,
-            Operand::memoryAddress(100),
-            Operand::registerOperand(RegisterName::R1)
-        ),
-
-        Instruction(
-            Opcode::LOAD,
+            Opcode::MOV,
             Operand::registerOperand(RegisterName::R2),
-            Operand::memoryAddress(100)
+            Operand::immediate(5)
         ),
 
         Instruction(
-            Opcode::MUL,
-            Operand::registerOperand(RegisterName::R2),
-            Operand::immediate(2)
+            Opcode::ADD,
+            Operand::registerOperand(RegisterName::R1),
+            Operand::immediate(1)
         ),
 
         Instruction(
-            Opcode::DIV,
-            Operand::registerOperand(RegisterName::R2),
-            Operand::immediate(3)
+            Opcode::CMP,
+            Operand::registerOperand(RegisterName::R1),
+            Operand::registerOperand(RegisterName::R2)
         ),
 
         Instruction(
-            Opcode::SUB,
-            Operand::registerOperand(RegisterName::R2),
-            Operand::immediate(82)
+            Opcode::JL,
+            Operand::label("loop")
         ),
 
         Instruction(Opcode::HALT)
     };
 
-    CPU cpu;
-    cpu.loadProgram(program);
+    CPU::LabelTable labels = {
+        {"loop", 2}
+    };
 
-    printProgram(cpu.program());
+    CPU cpu;
+    cpu.loadProgram(program, labels);
+
+    printProgram(cpu.program(), cpu.labels());
 
     std::cout << "=== Initial CPU State ===\n";
     std::cout << cpu.state().summary();
-    std::cout << "Memory[96..103]: "
-              << cpu.state().memory().dumpRange(96, 8)
-              << "\n\n";
+    std::cout << "\n";
 
     runStepByStep(cpu);
 
     std::cout << "=== Final CPU State ===\n";
     std::cout << cpu.state().summary();
-    std::cout << "Memory[96..103]: "
-              << cpu.state().memory().dumpRange(96, 8)
-              << "\n\n";
+    std::cout << "\n";
 
     if (cpu.state().hasError()) {
         std::cout << "Execution failed: "
@@ -124,7 +129,16 @@ int main() {
         return 1;
     }
 
-    std::cout << "Execution finished successfully.\n";
+    const auto finalR1 = cpu.state().registers().get(RegisterName::R1);
+    const auto finalR2 = cpu.state().registers().get(RegisterName::R2);
+
+    std::cout << "Final Check:\n";
+    std::cout << "R1 = " << finalR1 << "\n";
+    std::cout << "R2 = " << finalR2 << "\n";
+    std::cout << "ZF = " << (cpu.state().flags().zero() ? 1 : 0) << "\n";
+    std::cout << "SF = " << (cpu.state().flags().sign() ? 1 : 0) << "\n";
+
+    std::cout << "\nExecution finished successfully.\n";
 
     return 0;
 }

@@ -6,21 +6,30 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace zero_cpu {
 
 class CPU {
 public:
+    using LabelTable = std::unordered_map<std::string, std::size_t>;
+
     CPU();
 
     void loadProgram(std::vector<Instruction> program);
+    void loadProgram(std::vector<Instruction> program, LabelTable labels);
+
+    void setLabels(LabelTable labels);
+
     void reset();
 
     CPUState& state();
     const CPUState& state() const;
 
     const std::vector<Instruction>& program() const;
+    const LabelTable& labels() const;
 
     bool step();
     void run(std::size_t max_steps = 100000);
@@ -28,6 +37,7 @@ public:
 private:
     CPUState state_;
     std::vector<Instruction> program_;
+    LabelTable labels_;
 
     void execute(const Instruction& instruction);
 
@@ -43,6 +53,19 @@ private:
     void executeMul(const Instruction& instruction);
     void executeDiv(const Instruction& instruction);
 
+    void executeCmp(const Instruction& instruction);
+
+    void executeJmp(const Instruction& instruction);
+    void executeJe(const Instruction& instruction);
+    void executeJne(const Instruction& instruction);
+    void executeJg(const Instruction& instruction);
+    void executeJl(const Instruction& instruction);
+
+    void branchToLabel(const Operand& operand);
+    void branchToLabelIf(const Operand& operand, bool condition);
+
+    std::size_t resolveLabelAddress(const Operand& operand) const;
+
     std::int64_t readOperandValue(const Operand& operand) const;
     void writeOperandValue(const Operand& operand, std::int64_t value);
 
@@ -53,6 +76,7 @@ private:
     void requireRegisterDestination(const Instruction& instruction) const;
     void requireMemoryDestination(const Instruction& instruction) const;
     void requireMemorySource(const Instruction& instruction) const;
+    void requireLabelDestination(const Instruction& instruction) const;
 };
 
 } // namespace zero_cpu

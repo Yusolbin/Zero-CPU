@@ -9,12 +9,24 @@ namespace zero_cpu {
 
 CPU::CPU()
     : state_(),
-      program_() {
+      program_(),
+      labels_() {
 }
 
 void CPU::loadProgram(std::vector<Instruction> program) {
     program_ = std::move(program);
+    labels_.clear();
     state_.reset();
+}
+
+void CPU::loadProgram(std::vector<Instruction> program, LabelTable labels) {
+    program_ = std::move(program);
+    labels_ = std::move(labels);
+    state_.reset();
+}
+
+void CPU::setLabels(LabelTable labels) {
+    labels_ = std::move(labels);
 }
 
 void CPU::reset() {
@@ -31,6 +43,10 @@ const CPUState& CPU::state() const {
 
 const std::vector<Instruction>& CPU::program() const {
     return program_;
+}
+
+const CPU::LabelTable& CPU::labels() const {
+    return labels_;
 }
 
 bool CPU::step() {
@@ -105,6 +121,30 @@ void CPU::execute(const Instruction& instruction) {
 
     case Opcode::DIV:
         executeDiv(instruction);
+        break;
+
+    case Opcode::CMP:
+        executeCmp(instruction);
+        break;
+
+    case Opcode::JMP:
+        executeJmp(instruction);
+        break;
+
+    case Opcode::JE:
+        executeJe(instruction);
+        break;
+
+    case Opcode::JNE:
+        executeJne(instruction);
+        break;
+
+    case Opcode::JG:
+        executeJg(instruction);
+        break;
+
+    case Opcode::JL:
+        executeJl(instruction);
         break;
 
     default:
@@ -242,6 +282,88 @@ void CPU::executeDiv(const Instruction& instruction) {
     state_.advancePc();
 }
 
+void CPU::executeCmp(const Instruction& instruction) {
+    requireRegisterDestination(instruction);
+    requireSource(instruction);
+
+    if (!instruction.src().isRegister() && !instruction.src().isImmediate()) {
+        throw std::runtime_error("CMP source must be register or immediate");
+    }
+
+    const std::int64_t lhs = readOperandValue(instruction.dst());
+    const std::int64_t rhs = readOperandValue(instruction.src());
+
+    const std::int64_t result = lhs - rhs;
+
+    state_.flags().updateZeroAndSign(result);
+    state_.advancePc();
+}
+
+void CPU::executeJmp(const Instruction& instruction) {
+    requireLabelDestination(instruction);
+    branchToLabel(instruction.dst());
+}
+
+void CPU::executeJe(const Instruction& instruction) {
+    requireLabelDestination(instruction);
+    branchToLabelIf(instruction.dst(), state_.flags().zero());
+}
+
+void CPU::executeJne(const Instruction& instruction) {
+    requireLabelDestination(instruction);
+    branchToLabelIf(instruction.dst(), !state_.flags().zero());
+}
+
+void CPU::executeJg(const Instruction& instruction) {
+    requireLabelDestination(instruction);
+
+    const bool greater =
+        !state_.flags().zero()
+        && !state_.flags().sign();
+
+    branchToLabelIf(instruction.dst(), greater);
+}
+
+void CPU::executeJl(const Instruction& instruction) {
+    requireLabelDestination(instruction);
+    branchToLabelIf(instruction.dst(), state_.flags().sign());
+}
+
+void CPU::branchToLabel(const Operand& operand) {
+    const std::size_t target = resolveLabelAddress(operand);
+    state_.setPc(target);
+}
+
+void CPU::branchToLabelIf(const Operand& operand, bool condition) {
+    if (condition) {
+        branchToLabel(operand);
+    } else {
+        state_.advancePc();
+    }
+}
+
+std::size_t CPU::resolveLabelAddress(const Operand& operand) const {
+    if (!operand.isLabel()) {
+        throw std::runtime_error("Branch target must be label operand");
+    }
+
+    const std::string& label = operand.asLabel();
+
+    const auto found = labels_.find(label);
+
+    if (found == labels_.end()) {
+        throw std::runtime_error("Unknown label: " + label);
+    }
+
+    const std::size_t address = found->second;
+
+    if (address >= program_.size()) {
+        throw std::runtime_error("Label address out of program range: " + label);
+    }
+
+    return address;
+}
+
 std::int64_t CPU::readOperandValue(const Operand& operand) const {
     if (operand.isRegister()) {
         return state_.registers().get(operand.asRegister());
@@ -256,7 +378,7 @@ std::int64_t CPU::readOperandValue(const Operand& operand) const {
     }
 
     if (operand.isLabel()) {
-        throw std::runtime_error("Cannot read label operand as value in current execution phase");
+        throw std::runtime_error("Cannot read label operand as value");
     }
 
     throw std::runtime_error("Cannot read empty operand");
@@ -340,6 +462,24 @@ void CPU::requireMemorySource(const Instruction& instruction) const {
         throw std::runtime_error(
             opcodeToString(instruction.opcode())
             + " requires memory source operand"
+        );
+    }
+}
+
+void CPU::requireLabelDestination(const Instruction& instruction) const {
+    requireDestination(instruction);
+
+    if (instruction.hasSource()) {
+        throw std::runtime_error(
+            opcodeToString(instruction.opcode())
+            + " does not accept source operand"
+        );
+    }
+
+    if (!instruction.dst().isLabel()) {
+        throw std::runtime_error(
+            opcodeToString(instruction.opcode())
+            + " requires label destination operand"
         );
     }
 }
