@@ -83,12 +83,28 @@ void CPU::execute(const Instruction& instruction) {
         executeMov(instruction);
         break;
 
+    case Opcode::LOAD:
+        executeLoad(instruction);
+        break;
+
+    case Opcode::STORE:
+        executeStore(instruction);
+        break;
+
     case Opcode::ADD:
         executeAdd(instruction);
         break;
 
     case Opcode::SUB:
         executeSub(instruction);
+        break;
+
+    case Opcode::MUL:
+        executeMul(instruction);
+        break;
+
+    case Opcode::DIV:
+        executeDiv(instruction);
         break;
 
     default:
@@ -110,8 +126,38 @@ void CPU::executeHalt(const Instruction& instruction) {
 }
 
 void CPU::executeMov(const Instruction& instruction) {
-    requireDestination(instruction);
+    requireRegisterDestination(instruction);
     requireSource(instruction);
+
+    if (!instruction.src().isRegister() && !instruction.src().isImmediate()) {
+        throw std::runtime_error("MOV source must be register or immediate");
+    }
+
+    const std::int64_t value = readOperandValue(instruction.src());
+
+    writeOperandValue(instruction.dst(), value);
+
+    state_.advancePc();
+}
+
+void CPU::executeLoad(const Instruction& instruction) {
+    requireRegisterDestination(instruction);
+    requireMemorySource(instruction);
+
+    const std::int64_t value = readOperandValue(instruction.src());
+
+    writeOperandValue(instruction.dst(), value);
+
+    state_.advancePc();
+}
+
+void CPU::executeStore(const Instruction& instruction) {
+    requireMemoryDestination(instruction);
+    requireSource(instruction);
+
+    if (!instruction.src().isRegister() && !instruction.src().isImmediate()) {
+        throw std::runtime_error("STORE source must be register or immediate");
+    }
 
     const std::int64_t value = readOperandValue(instruction.src());
 
@@ -123,6 +169,10 @@ void CPU::executeMov(const Instruction& instruction) {
 void CPU::executeAdd(const Instruction& instruction) {
     requireRegisterDestination(instruction);
     requireSource(instruction);
+
+    if (!instruction.src().isRegister() && !instruction.src().isImmediate()) {
+        throw std::runtime_error("ADD source must be register or immediate");
+    }
 
     const std::int64_t lhs = readOperandValue(instruction.dst());
     const std::int64_t rhs = readOperandValue(instruction.src());
@@ -138,10 +188,54 @@ void CPU::executeSub(const Instruction& instruction) {
     requireRegisterDestination(instruction);
     requireSource(instruction);
 
+    if (!instruction.src().isRegister() && !instruction.src().isImmediate()) {
+        throw std::runtime_error("SUB source must be register or immediate");
+    }
+
     const std::int64_t lhs = readOperandValue(instruction.dst());
     const std::int64_t rhs = readOperandValue(instruction.src());
 
     const std::int64_t result = lhs - rhs;
+
+    writeOperandValue(instruction.dst(), result);
+    state_.flags().updateZeroAndSign(result);
+    state_.advancePc();
+}
+
+void CPU::executeMul(const Instruction& instruction) {
+    requireRegisterDestination(instruction);
+    requireSource(instruction);
+
+    if (!instruction.src().isRegister() && !instruction.src().isImmediate()) {
+        throw std::runtime_error("MUL source must be register or immediate");
+    }
+
+    const std::int64_t lhs = readOperandValue(instruction.dst());
+    const std::int64_t rhs = readOperandValue(instruction.src());
+
+    const std::int64_t result = lhs * rhs;
+
+    writeOperandValue(instruction.dst(), result);
+    state_.flags().updateZeroAndSign(result);
+    state_.advancePc();
+}
+
+void CPU::executeDiv(const Instruction& instruction) {
+    requireRegisterDestination(instruction);
+    requireSource(instruction);
+
+    if (!instruction.src().isRegister() && !instruction.src().isImmediate()) {
+        throw std::runtime_error("DIV source must be register or immediate");
+    }
+
+    const std::int64_t lhs = readOperandValue(instruction.dst());
+    const std::int64_t rhs = readOperandValue(instruction.src());
+
+    if (rhs == 0) {
+        throw std::runtime_error("Division by zero");
+    }
+
+    const std::int64_t result = lhs / rhs;
 
     writeOperandValue(instruction.dst(), result);
     state_.flags().updateZeroAndSign(result);
@@ -228,8 +322,26 @@ void CPU::requireRegisterDestination(const Instruction& instruction) const {
     }
 }
 
-void CPU::fail(const char* message) const {
-    throw std::runtime_error(message);
+void CPU::requireMemoryDestination(const Instruction& instruction) const {
+    requireDestination(instruction);
+
+    if (!instruction.dst().isMemoryAddress()) {
+        throw std::runtime_error(
+            opcodeToString(instruction.opcode())
+            + " requires memory destination operand"
+        );
+    }
+}
+
+void CPU::requireMemorySource(const Instruction& instruction) const {
+    requireSource(instruction);
+
+    if (!instruction.src().isMemoryAddress()) {
+        throw std::runtime_error(
+            opcodeToString(instruction.opcode())
+            + " requires memory source operand"
+        );
+    }
 }
 
 } // namespace zero_cpu

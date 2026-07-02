@@ -7,55 +7,21 @@
 #include <iostream>
 #include <vector>
 
-int main() {
-    using namespace zero_cpu;
+namespace {
 
-    std::vector<Instruction> program = {
-        Instruction(
-            Opcode::MOV,
-            Operand::registerOperand(RegisterName::R1),
-            Operand::immediate(10)
-        ),
-
-        Instruction(
-            Opcode::MOV,
-            Operand::registerOperand(RegisterName::R2),
-            Operand::immediate(20)
-        ),
-
-        Instruction(
-            Opcode::ADD,
-            Operand::registerOperand(RegisterName::R1),
-            Operand::registerOperand(RegisterName::R2)
-        ),
-
-        Instruction(
-            Opcode::SUB,
-            Operand::registerOperand(RegisterName::R1),
-            Operand::immediate(5)
-        ),
-
-        Instruction(Opcode::HALT)
-    };
-
-    CPU cpu;
-    cpu.loadProgram(program);
-
+void printProgram(const std::vector<zero_cpu::Instruction>& program) {
     std::cout << "=== Zero-CPU Program ===\n";
 
-    const auto& loadedProgram = cpu.program();
-
-    for (std::size_t i = 0; i < loadedProgram.size(); ++i) {
+    for (std::size_t i = 0; i < program.size(); ++i) {
         std::cout << "[" << i << "] "
-                  << loadedProgram[i].toString()
+                  << program[i].toString()
                   << "\n";
     }
 
     std::cout << "\n";
+}
 
-    std::cout << "=== Initial CPU State ===\n";
-    std::cout << cpu.state().summary() << "\n";
-
+void runStepByStep(zero_cpu::CPU& cpu) {
     std::cout << "=== Step Execution ===\n";
 
     std::size_t stepCount = 0;
@@ -68,7 +34,7 @@ int main() {
             break;
         }
 
-        const Instruction& instruction = cpu.program()[pcBefore];
+        const zero_cpu::Instruction& instruction = cpu.program()[pcBefore];
 
         std::cout << "Step " << stepCount
                   << " | PC=" << pcBefore
@@ -77,13 +43,78 @@ int main() {
 
         cpu.step();
 
-        std::cout << cpu.state().summary() << "\n";
+        std::cout << cpu.state().summary();
+        std::cout << "Memory[96..103]: "
+                  << cpu.state().memory().dumpRange(96, 8)
+                  << "\n\n";
 
         ++stepCount;
     }
+}
+
+} // namespace
+
+int main() {
+    using namespace zero_cpu;
+
+    std::vector<Instruction> program = {
+        Instruction(
+            Opcode::MOV,
+            Operand::registerOperand(RegisterName::R1),
+            Operand::immediate(123)
+        ),
+
+        Instruction(
+            Opcode::STORE,
+            Operand::memoryAddress(100),
+            Operand::registerOperand(RegisterName::R1)
+        ),
+
+        Instruction(
+            Opcode::LOAD,
+            Operand::registerOperand(RegisterName::R2),
+            Operand::memoryAddress(100)
+        ),
+
+        Instruction(
+            Opcode::MUL,
+            Operand::registerOperand(RegisterName::R2),
+            Operand::immediate(2)
+        ),
+
+        Instruction(
+            Opcode::DIV,
+            Operand::registerOperand(RegisterName::R2),
+            Operand::immediate(3)
+        ),
+
+        Instruction(
+            Opcode::SUB,
+            Operand::registerOperand(RegisterName::R2),
+            Operand::immediate(82)
+        ),
+
+        Instruction(Opcode::HALT)
+    };
+
+    CPU cpu;
+    cpu.loadProgram(program);
+
+    printProgram(cpu.program());
+
+    std::cout << "=== Initial CPU State ===\n";
+    std::cout << cpu.state().summary();
+    std::cout << "Memory[96..103]: "
+              << cpu.state().memory().dumpRange(96, 8)
+              << "\n\n";
+
+    runStepByStep(cpu);
 
     std::cout << "=== Final CPU State ===\n";
-    std::cout << cpu.state().summary() << "\n";
+    std::cout << cpu.state().summary();
+    std::cout << "Memory[96..103]: "
+              << cpu.state().memory().dumpRange(96, 8)
+              << "\n\n";
 
     if (cpu.state().hasError()) {
         std::cout << "Execution failed: "

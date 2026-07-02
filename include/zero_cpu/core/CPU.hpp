@@ -33,9 +33,15 @@ private:
 
     void executeNop(const Instruction& instruction);
     void executeHalt(const Instruction& instruction);
+
     void executeMov(const Instruction& instruction);
+    void executeLoad(const Instruction& instruction);
+    void executeStore(const Instruction& instruction);
+
     void executeAdd(const Instruction& instruction);
     void executeSub(const Instruction& instruction);
+    void executeMul(const Instruction& instruction);
+    void executeDiv(const Instruction& instruction);
 
     std::int64_t readOperandValue(const Operand& operand) const;
     void writeOperandValue(const Operand& operand, std::int64_t value);
@@ -43,9 +49,10 @@ private:
     void requireNoOperand(const Instruction& instruction) const;
     void requireDestination(const Instruction& instruction) const;
     void requireSource(const Instruction& instruction) const;
-    void requireRegisterDestination(const Instruction& instruction) const;
 
-    [[noreturn]] void fail(const char* message) const;
+    void requireRegisterDestination(const Instruction& instruction) const;
+    void requireMemoryDestination(const Instruction& instruction) const;
+    void requireMemorySource(const Instruction& instruction) const;
 };
 
 } // namespace zero_cpu
