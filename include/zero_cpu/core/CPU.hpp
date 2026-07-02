@@ -3,6 +3,7 @@
 #include "zero_cpu/core/CPUState.hpp"
 #include "zero_cpu/isa/Instruction.hpp"
 #include "zero_cpu/isa/Operand.hpp"
+#include "zero_cpu/trace/TraceLogger.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -31,6 +32,9 @@ public:
     const std::vector<Instruction>& program() const;
     const LabelTable& labels() const;
 
+    const TraceLogger& traceLogger() const;
+    TraceLogger& traceLogger();
+
     bool step();
     void run(std::size_t max_steps = 100000);
 
@@ -38,6 +42,7 @@ private:
     CPUState state_;
     std::vector<Instruction> program_;
     LabelTable labels_;
+    TraceLogger trace_logger_;
 
     void execute(const Instruction& instruction);
 

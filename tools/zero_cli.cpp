@@ -31,7 +31,7 @@ void printProgram(
 }
 
 void runStepByStep(zero_cpu::CPU& cpu) {
-    std::cout << "=== Step Execution ===\n";
+    std::cout << "=== Step Execution With Trace ===\n";
 
     std::size_t stepCount = 0;
 
@@ -52,7 +52,11 @@ void runStepByStep(zero_cpu::CPU& cpu) {
 
         cpu.step();
 
-        std::cout << cpu.state().summary();
+        if (!cpu.traceLogger().empty()) {
+            std::cout << cpu.traceLogger().last().toCompactString()
+                      << "\n";
+        }
+
         std::cout << "\n";
 
         ++stepCount;
@@ -99,6 +103,12 @@ int main() {
             Operand::label("loop")
         ),
 
+        Instruction(
+            Opcode::STORE,
+            Operand::memoryAddress(100),
+            Operand::registerOperand(RegisterName::R1)
+        ),
+
         Instruction(Opcode::HALT)
     };
 
@@ -119,14 +129,24 @@ int main() {
 
     std::cout << "=== Final CPU State ===\n";
     std::cout << cpu.state().summary();
-    std::cout << "\n";
+    std::cout << "Memory[96..103]: "
+              << cpu.state().memory().dumpRange(96, 8)
+              << "\n\n";
 
     if (cpu.state().hasError()) {
         std::cout << "Execution failed: "
                   << cpu.state().errorMessage()
-                  << "\n";
+                  << "\n\n";
+    }
 
-        return 1;
+    std::cout << "=== Compact Trace Log ===\n";
+    std::cout << cpu.traceLogger().compactString() << "\n";
+
+    std::cout << "=== Last Trace Event Full View ===\n";
+
+    if (!cpu.traceLogger().empty()) {
+        std::cout << cpu.traceLogger().last().toFullString()
+                  << "\n";
     }
 
     const auto finalR1 = cpu.state().registers().get(RegisterName::R1);
@@ -137,6 +157,13 @@ int main() {
     std::cout << "R2 = " << finalR2 << "\n";
     std::cout << "ZF = " << (cpu.state().flags().zero() ? 1 : 0) << "\n";
     std::cout << "SF = " << (cpu.state().flags().sign() ? 1 : 0) << "\n";
+    std::cout << "Memory[100] = "
+              << cpu.state().memory().read(100)
+              << "\n";
+
+    if (cpu.state().hasError()) {
+        return 1;
+    }
 
     std::cout << "\nExecution finished successfully.\n";
 

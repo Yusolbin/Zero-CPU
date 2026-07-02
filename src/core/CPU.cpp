@@ -1,6 +1,7 @@
 #include "zero_cpu/core/CPU.hpp"
 
 #include "zero_cpu/isa/Opcode.hpp"
+#include "zero_cpu/trace/TraceEvent.hpp"
 
 #include <stdexcept>
 #include <utility>
@@ -10,19 +11,22 @@ namespace zero_cpu {
 CPU::CPU()
     : state_(),
       program_(),
-      labels_() {
+      labels_(),
+      trace_logger_() {
 }
 
 void CPU::loadProgram(std::vector<Instruction> program) {
     program_ = std::move(program);
     labels_.clear();
     state_.reset();
+    trace_logger_.clear();
 }
 
 void CPU::loadProgram(std::vector<Instruction> program, LabelTable labels) {
     program_ = std::move(program);
     labels_ = std::move(labels);
     state_.reset();
+    trace_logger_.clear();
 }
 
 void CPU::setLabels(LabelTable labels) {
@@ -31,6 +35,7 @@ void CPU::setLabels(LabelTable labels) {
 
 void CPU::reset() {
     state_.reset();
+    trace_logger_.clear();
 }
 
 CPUState& CPU::state() {
@@ -49,6 +54,14 @@ const CPU::LabelTable& CPU::labels() const {
     return labels_;
 }
 
+const TraceLogger& CPU::traceLogger() const {
+    return trace_logger_;
+}
+
+TraceLogger& CPU::traceLogger() {
+    return trace_logger_;
+}
+
 bool CPU::step() {
     if (state_.halted()) {
         return false;
@@ -59,12 +72,26 @@ bool CPU::step() {
         return false;
     }
 
-    const Instruction& instruction = program_[state_.pc()];
+    const Instruction instruction = program_[state_.pc()];
+    const CPUState before = state_;
 
     try {
         execute(instruction);
+
+        const CPUState after = state_;
+
+        trace_logger_.record(
+            TraceEvent(before, instruction, after)
+        );
     } catch (const std::exception& ex) {
         state_.setError(ex.what());
+
+        const CPUState after = state_;
+
+        trace_logger_.record(
+            TraceEvent(before, instruction, after, ex.what())
+        );
+
         return false;
     }
 
