@@ -5,7 +5,9 @@
 #include "zero_cpu/binary/BinaryWriter.hpp"
 #include "zero_cpu/core/CPU.hpp"
 #include "zero_cpu/core/RegisterFile.hpp"
+#include "zero_cpu/isa/EncodedInstruction.hpp"
 #include "zero_cpu/isa/Instruction.hpp"
+#include "zero_cpu/isa/InstructionDecoder.hpp"
 #include "zero_cpu/isa/InstructionEncoder.hpp"
 
 #include <cstddef>
@@ -118,8 +120,43 @@ void printHexBytes(const std::vector<std::uint8_t>& bytes) {
     std::cout << std::dec << "\n";
 }
 
+void printDecodedInstruction(
+    std::size_t index,
+    const zero_cpu::DecodedInstruction& instruction
+) {
+    std::cout << "[" << index << "] ";
+
+    std::cout << "opcode=0x"
+              << std::hex
+              << std::setw(2)
+              << std::setfill('0')
+              << static_cast<int>(zero_cpu::encodeOpcode(instruction.opcode))
+              << std::dec;
+
+    std::cout << " | dst_type="
+              << zero_cpu::toString(instruction.dst_type)
+              << " | dst_payload="
+              << instruction.dst_payload;
+
+    std::cout << " | src_type="
+              << zero_cpu::toString(instruction.src_type)
+              << " | src_payload="
+              << instruction.src_payload;
+
+    std::cout << "\n";
+}
+
 int runBinaryTest(const std::string& outputPath) {
+    using namespace zero_cpu;
     using namespace zero_cpu::binary;
+
+    std::vector<Instruction> instructions;
+    instructions.emplace_back(Opcode::NOP);
+    instructions.emplace_back(Opcode::HALT);
+
+    InstructionEncoder encoder;
+    std::vector<std::uint8_t> encodedCode =
+        encoder.encodeProgram(instructions, {});
 
     BinaryProgram program;
 
@@ -127,14 +164,9 @@ int runBinaryTest(const std::string& outputPath) {
     program.header.minor_version = kMinorVersion;
     program.header.endianness = BinaryEndianness::Little;
     program.header.entry_point = 0;
-
-    program.code.resize(kInstructionSize * 2, std::uint8_t{0});
-
-    // Instruction 0: NOP
-    program.code[0] = 0x00;
-
-    // Instruction 1: HALT
-    program.code[kInstructionSize] = 0x01;
+    program.header.code_size =
+        static_cast<std::uint32_t>(encodedCode.size());
+    program.code = std::move(encodedCode);
 
     BinaryWriter writer;
     writer.writeFile(outputPath, program);
@@ -176,8 +208,31 @@ int runBinaryTest(const std::string& outputPath) {
 
     std::cout << "=== Code Bytes ===\n";
     printHexBytes(loaded.code);
+    std::cout << "\n";
 
-    std::cout << "\nBinary writer/reader test finished successfully.\n";
+    std::cout << "=== Decoded Instructions ===\n";
+
+    InstructionDecoder decoder;
+
+    for (
+        std::size_t offset = 0;
+        offset < loaded.code.size();
+        offset += kInstructionSize
+    ) {
+        std::vector<std::uint8_t> instructionBytes(
+            loaded.code.begin() + offset,
+            loaded.code.begin() + offset + kInstructionSize
+        );
+
+        const DecodedInstruction decoded =
+            decoder.decodeInstruction(instructionBytes);
+
+        const std::size_t index = offset / kInstructionSize;
+        printDecodedInstruction(index, decoded);
+    }
+
+    std::cout << "\n";
+    std::cout << "Binary encoder/writer/reader/decoder test finished successfully.\n";
 
     return 0;
 }
