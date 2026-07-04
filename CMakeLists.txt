@@ -31,6 +31,7 @@ add_library(zero_cpu_core
 
     src/binary/BinaryWriter.cpp
     src/binary/BinaryReader.cpp
+    src/binary/BinaryLoader.cpp
 )
 
 target_include_directories(zero_cpu_core

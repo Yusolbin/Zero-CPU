@@ -1,15 +1,18 @@
 #include "zero_cpu/assembler/Assembler.hpp"
 #include "zero_cpu/binary/BinaryFormat.hpp"
+#include "zero_cpu/binary/BinaryLoader.hpp"
 #include "zero_cpu/binary/BinaryProgram.hpp"
 #include "zero_cpu/binary/BinaryReader.hpp"
 #include "zero_cpu/binary/BinaryWriter.hpp"
 #include "zero_cpu/core/CPU.hpp"
+#include "zero_cpu/core/Memory.hpp"
 #include "zero_cpu/core/RegisterFile.hpp"
 #include "zero_cpu/isa/EncodedInstruction.hpp"
 #include "zero_cpu/isa/Instruction.hpp"
 #include "zero_cpu/isa/InstructionDecoder.hpp"
 #include "zero_cpu/isa/InstructionEncoder.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -26,6 +29,8 @@ constexpr std::size_t kDataViewCount = 16;
 
 constexpr std::size_t kStackViewStart = 2048;
 constexpr std::size_t kStackViewCount = 32;
+
+constexpr std::size_t kLoadedMemoryPreviewCount = 96;
 
 void printProgram(
     const std::vector<zero_cpu::Instruction>& program,
@@ -275,6 +280,54 @@ int dumpBinaryFile(const std::string& inputPath) {
     return 0;
 }
 
+int loadBinaryFile(const std::string& inputPath) {
+    using namespace zero_cpu;
+    using namespace zero_cpu::binary;
+
+    BinaryReader reader;
+    BinaryProgram program = reader.readFile(inputPath);
+
+    Memory memory;
+
+    BinaryLoader loader;
+    LoadedBinaryImage image = loader.loadIntoMemory(program, memory);
+
+    std::cout << "Input binary file: " << inputPath << "\n\n";
+
+    printBinaryHeader(program);
+    std::cout << "\n";
+
+    std::cout << "=== Loaded Binary Image ===\n";
+    std::cout << "Code Base: "
+              << image.code_base
+              << "\n";
+
+    std::cout << "Entry Point: "
+              << image.entry_point
+              << "\n";
+
+    std::cout << "Code Size: "
+              << image.code_size
+              << " bytes\n\n";
+
+    const std::size_t previewCount =
+        std::min(image.code_size, kLoadedMemoryPreviewCount);
+
+    std::cout << "=== Memory Preview ===\n";
+    std::cout << "Memory[0.."
+              << (previewCount == 0 ? 0 : previewCount - 1)
+              << "]: "
+              << memory.dumpRange(0, previewCount)
+              << "\n\n";
+
+    printDecodedInstructions(program.code);
+    std::cout << "\n";
+
+    std::cout << "Binary load test finished successfully.\n";
+
+    return 0;
+}
+
 int assembleToBinary(
     const std::string& inputPath,
     const std::string& outputPath
@@ -389,6 +442,7 @@ void printUsage() {
     std::cout << "  zero_cli binary-test [output.zbin]\n";
     std::cout << "  zero_cli assemble <input.zasm> <output.zbin>\n";
     std::cout << "  zero_cli dump-binary <input.zbin>\n";
+    std::cout << "  zero_cli load-binary <input.zbin>\n";
 }
 
 } // namespace
@@ -430,6 +484,16 @@ int main(int argc, char* argv[]) {
                 }
 
                 return dumpBinaryFile(argv[2]);
+            }
+
+            if (command == "load-binary") {
+                if (argc != 3) {
+                    std::cerr << "Invalid load-binary command.\n\n";
+                    printUsage();
+                    return 1;
+                }
+
+                return loadBinaryFile(argv[2]);
             }
         }
 
