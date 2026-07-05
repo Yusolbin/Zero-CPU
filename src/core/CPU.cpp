@@ -1,47 +1,99 @@
 #include "zero_cpu/core/CPU.hpp"
 
-#include "zero_cpu/isa/Opcode.hpp"
-#include "zero_cpu/trace/TraceEvent.hpp"
+#include "zero_cpu/binary/BinaryLoader.hpp"
 
 #include <stdexcept>
-#include <utility>
 
 namespace zero_cpu {
 
-namespace {
-
-constexpr std::size_t kStackSlotSize = 8;
-
-}
-
-CPU::CPU()
-    : state_(),
-      program_(),
-      labels_(),
-      trace_logger_() {
-}
-
-void CPU::loadProgram(std::vector<Instruction> program) {
-    program_ = std::move(program);
-    labels_.clear();
-    state_.reset();
-    trace_logger_.clear();
-}
-
-void CPU::loadProgram(std::vector<Instruction> program, LabelTable labels) {
-    program_ = std::move(program);
-    labels_ = std::move(labels);
-    state_.reset();
-    trace_logger_.clear();
-}
-
-void CPU::setLabels(LabelTable labels) {
-    labels_ = std::move(labels);
+CPU::CPU() {
+    reset();
 }
 
 void CPU::reset() {
     state_.reset();
+    program_.clear();
+    labels_.clear();
     trace_logger_.clear();
+
+    has_binary_program_ = false;
+    binary_code_base_ = 0;
+    binary_entry_point_ = 0;
+    binary_code_size_ = 0;
+}
+
+void CPU::loadProgram(
+    const std::vector<Instruction>& program,
+    const LabelTable& labels
+) {
+    state_.reset();
+    program_ = program;
+    labels_ = labels;
+    trace_logger_.clear();
+
+    has_binary_program_ = false;
+    binary_code_base_ = 0;
+    binary_entry_point_ = 0;
+    binary_code_size_ = 0;
+}
+
+void CPU::loadBinaryProgram(const binary::BinaryProgram& program) {
+    state_.reset();
+    program_.clear();
+    labels_.clear();
+    trace_logger_.clear();
+
+    binary::BinaryLoader loader;
+    const binary::LoadedBinaryImage image =
+        loader.loadIntoMemory(program, state_.memory());
+
+    state_.setPc(image.entry_point);
+
+    has_binary_program_ = true;
+    binary_code_base_ = image.code_base;
+    binary_entry_point_ = image.entry_point;
+    binary_code_size_ = image.code_size;
+}
+
+void CPU::step() {
+    if (state_.halted()) {
+        return;
+    }
+
+    if (has_binary_program_) {
+        setRuntimeError(
+            "Binary execution is not implemented yet. "
+            "Current step only supports assembled Instruction programs."
+        );
+        return;
+    }
+
+    const std::size_t pc = state_.pc();
+
+    if (pc >= program_.size()) {
+        setRuntimeError("PC out of program range");
+        return;
+    }
+
+    try {
+        const Instruction& instruction = program_[pc];
+        execute(instruction);
+    } catch (const std::exception& ex) {
+        setRuntimeError(ex.what());
+    }
+}
+
+void CPU::run(std::size_t maxSteps) {
+    std::size_t count = 0;
+
+    while (!state_.halted() && count < maxSteps) {
+        step();
+        ++count;
+    }
+
+    if (!state_.halted() && count >= maxSteps) {
+        setRuntimeError("Maximum step count reached");
+    }
 }
 
 CPUState& CPU::state() {
@@ -60,62 +112,28 @@ const CPU::LabelTable& CPU::labels() const {
     return labels_;
 }
 
-const TraceLogger& CPU::traceLogger() const {
-    return trace_logger_;
-}
-
 TraceLogger& CPU::traceLogger() {
     return trace_logger_;
 }
 
-bool CPU::step() {
-    if (state_.halted()) {
-        return false;
-    }
-
-    if (state_.pc() >= program_.size()) {
-        state_.setError("Program counter out of bounds");
-        return false;
-    }
-
-    const Instruction instruction = program_[state_.pc()];
-    const CPUState before = state_;
-
-    try {
-        execute(instruction);
-
-        const CPUState after = state_;
-
-        trace_logger_.record(
-            TraceEvent(before, instruction, after)
-        );
-    } catch (const std::exception& ex) {
-        state_.setError(ex.what());
-
-        const CPUState after = state_;
-
-        trace_logger_.record(
-            TraceEvent(before, instruction, after, ex.what())
-        );
-
-        return false;
-    }
-
-    return !state_.halted();
+const TraceLogger& CPU::traceLogger() const {
+    return trace_logger_;
 }
 
-void CPU::run(std::size_t max_steps) {
-    std::size_t executed_steps = 0;
+bool CPU::hasBinaryProgram() const {
+    return has_binary_program_;
+}
 
-    while (!state_.halted()) {
-        if (executed_steps >= max_steps) {
-            state_.setError("Maximum execution step count exceeded");
-            return;
-        }
+std::size_t CPU::binaryCodeBase() const {
+    return binary_code_base_;
+}
 
-        step();
-        ++executed_steps;
-    }
+std::size_t CPU::binaryEntryPoint() const {
+    return binary_entry_point_;
+}
+
+std::size_t CPU::binaryCodeSize() const {
+    return binary_code_size_;
 }
 
 void CPU::execute(const Instruction& instruction) {
@@ -196,17 +214,34 @@ void CPU::execute(const Instruction& instruction) {
         executeRet(instruction);
         break;
 
+    case Opcode::AND:
+        executeAnd(instruction);
+        break;
+
+    case Opcode::OR:
+        executeOr(instruction);
+        break;
+
+    case Opcode::XOR:
+        executeXor(instruction);
+        break;
+
+    case Opcode::NOT:
+        executeNot(instruction);
+        break;
+
+    case Opcode::TEST:
+        throw std::runtime_error("TEST is not implemented yet");
+
+    case Opcode::Invalid:
     default:
-        throw std::runtime_error(
-            "Unsupported opcode in current CPU execution engine: "
-            + opcodeToString(instruction.opcode())
-        );
+        throw std::runtime_error("Invalid opcode");
     }
 }
 
 void CPU::executeNop(const Instruction& instruction) {
     requireNoOperand(instruction);
-    state_.advancePc();
+    advancePcUnlessHalted();
 }
 
 void CPU::executeHalt(const Instruction& instruction) {
@@ -215,107 +250,92 @@ void CPU::executeHalt(const Instruction& instruction) {
 }
 
 void CPU::executeMov(const Instruction& instruction) {
-    requireRegisterDestination(instruction);
-    requireSource(instruction);
-
-    if (!instruction.src().isRegister() && !instruction.src().isImmediate()) {
-        throw std::runtime_error("MOV source must be register or immediate");
-    }
+    requireTwoOperands(instruction);
+    requireRegisterDestination(instruction.dst());
 
     const std::int64_t value = readOperandValue(instruction.src());
+    writeRegisterDestination(instruction.dst(), value);
 
-    writeOperandValue(instruction.dst(), value);
-
-    state_.advancePc();
+    state_.flags().updateZeroAndSign(value);
+    advancePcUnlessHalted();
 }
 
 void CPU::executeLoad(const Instruction& instruction) {
-    requireRegisterDestination(instruction);
-    requireMemorySource(instruction);
+    requireTwoOperands(instruction);
+    requireRegisterDestination(instruction.dst());
 
-    const std::int64_t value = readOperandValue(instruction.src());
+    if (instruction.src().type() != OperandType::MemoryAddress) {
+        throw std::runtime_error("LOAD source must be memory address");
+    }
 
-    writeOperandValue(instruction.dst(), value);
+    const std::int64_t value =
+        state_.memory().read(instruction.src().asMemoryAddress());
 
-    state_.advancePc();
+    writeRegisterDestination(instruction.dst(), value);
+    state_.flags().updateZeroAndSign(value);
+
+    advancePcUnlessHalted();
 }
 
 void CPU::executeStore(const Instruction& instruction) {
-    requireMemoryDestination(instruction);
-    requireSource(instruction);
+    requireTwoOperands(instruction);
 
-    if (!instruction.src().isRegister() && !instruction.src().isImmediate()) {
-        throw std::runtime_error("STORE source must be register or immediate");
+    if (instruction.dst().type() != OperandType::MemoryAddress) {
+        throw std::runtime_error("STORE destination must be memory address");
     }
 
     const std::int64_t value = readOperandValue(instruction.src());
+    state_.memory().write(instruction.dst().asMemoryAddress(), value);
 
-    writeOperandValue(instruction.dst(), value);
-
-    state_.advancePc();
+    state_.flags().updateZeroAndSign(value);
+    advancePcUnlessHalted();
 }
 
 void CPU::executeAdd(const Instruction& instruction) {
-    requireRegisterDestination(instruction);
-    requireSource(instruction);
-
-    if (!instruction.src().isRegister() && !instruction.src().isImmediate()) {
-        throw std::runtime_error("ADD source must be register or immediate");
-    }
+    requireTwoOperands(instruction);
+    requireRegisterDestination(instruction.dst());
 
     const std::int64_t lhs = readOperandValue(instruction.dst());
     const std::int64_t rhs = readOperandValue(instruction.src());
-
     const std::int64_t result = lhs + rhs;
 
-    writeOperandValue(instruction.dst(), result);
+    writeRegisterDestination(instruction.dst(), result);
     state_.flags().updateZeroAndSign(result);
-    state_.advancePc();
+
+    advancePcUnlessHalted();
 }
 
 void CPU::executeSub(const Instruction& instruction) {
-    requireRegisterDestination(instruction);
-    requireSource(instruction);
-
-    if (!instruction.src().isRegister() && !instruction.src().isImmediate()) {
-        throw std::runtime_error("SUB source must be register or immediate");
-    }
+    requireTwoOperands(instruction);
+    requireRegisterDestination(instruction.dst());
 
     const std::int64_t lhs = readOperandValue(instruction.dst());
     const std::int64_t rhs = readOperandValue(instruction.src());
-
     const std::int64_t result = lhs - rhs;
 
-    writeOperandValue(instruction.dst(), result);
+    writeRegisterDestination(instruction.dst(), result);
     state_.flags().updateZeroAndSign(result);
-    state_.advancePc();
+
+    advancePcUnlessHalted();
 }
 
 void CPU::executeMul(const Instruction& instruction) {
-    requireRegisterDestination(instruction);
-    requireSource(instruction);
-
-    if (!instruction.src().isRegister() && !instruction.src().isImmediate()) {
-        throw std::runtime_error("MUL source must be register or immediate");
-    }
+    requireTwoOperands(instruction);
+    requireRegisterDestination(instruction.dst());
 
     const std::int64_t lhs = readOperandValue(instruction.dst());
     const std::int64_t rhs = readOperandValue(instruction.src());
-
     const std::int64_t result = lhs * rhs;
 
-    writeOperandValue(instruction.dst(), result);
+    writeRegisterDestination(instruction.dst(), result);
     state_.flags().updateZeroAndSign(result);
-    state_.advancePc();
+
+    advancePcUnlessHalted();
 }
 
 void CPU::executeDiv(const Instruction& instruction) {
-    requireRegisterDestination(instruction);
-    requireSource(instruction);
-
-    if (!instruction.src().isRegister() && !instruction.src().isImmediate()) {
-        throw std::runtime_error("DIV source must be register or immediate");
-    }
+    requireTwoOperands(instruction);
+    requireRegisterDestination(instruction.dst());
 
     const std::int64_t lhs = readOperandValue(instruction.dst());
     const std::int64_t rhs = readOperandValue(instruction.src());
@@ -326,315 +346,265 @@ void CPU::executeDiv(const Instruction& instruction) {
 
     const std::int64_t result = lhs / rhs;
 
-    writeOperandValue(instruction.dst(), result);
+    writeRegisterDestination(instruction.dst(), result);
     state_.flags().updateZeroAndSign(result);
-    state_.advancePc();
+
+    advancePcUnlessHalted();
 }
 
 void CPU::executeCmp(const Instruction& instruction) {
-    requireRegisterDestination(instruction);
-    requireSource(instruction);
-
-    if (!instruction.src().isRegister() && !instruction.src().isImmediate()) {
-        throw std::runtime_error("CMP source must be register or immediate");
-    }
+    requireTwoOperands(instruction);
 
     const std::int64_t lhs = readOperandValue(instruction.dst());
     const std::int64_t rhs = readOperandValue(instruction.src());
-
     const std::int64_t result = lhs - rhs;
 
     state_.flags().updateZeroAndSign(result);
-    state_.advancePc();
+
+    advancePcUnlessHalted();
 }
 
 void CPU::executeJmp(const Instruction& instruction) {
-    requireLabelDestination(instruction);
-    branchToLabel(instruction.dst());
+    requireSingleOperand(instruction);
+    state_.setPc(resolveLabelAddress(instruction.dst()));
 }
 
 void CPU::executeJe(const Instruction& instruction) {
-    requireLabelDestination(instruction);
-    branchToLabelIf(instruction.dst(), state_.flags().zero());
+    requireSingleOperand(instruction);
+
+    if (state_.flags().zero()) {
+        state_.setPc(resolveLabelAddress(instruction.dst()));
+    } else {
+        advancePcUnlessHalted();
+    }
 }
 
 void CPU::executeJne(const Instruction& instruction) {
-    requireLabelDestination(instruction);
-    branchToLabelIf(instruction.dst(), !state_.flags().zero());
+    requireSingleOperand(instruction);
+
+    if (!state_.flags().zero()) {
+        state_.setPc(resolveLabelAddress(instruction.dst()));
+    } else {
+        advancePcUnlessHalted();
+    }
 }
 
 void CPU::executeJg(const Instruction& instruction) {
-    requireLabelDestination(instruction);
+    requireSingleOperand(instruction);
 
-    const bool greater =
-        !state_.flags().zero()
-        && !state_.flags().sign();
-
-    branchToLabelIf(instruction.dst(), greater);
+    if (!state_.flags().zero() && !state_.flags().sign()) {
+        state_.setPc(resolveLabelAddress(instruction.dst()));
+    } else {
+        advancePcUnlessHalted();
+    }
 }
 
 void CPU::executeJl(const Instruction& instruction) {
-    requireLabelDestination(instruction);
-    branchToLabelIf(instruction.dst(), state_.flags().sign());
+    requireSingleOperand(instruction);
+
+    if (state_.flags().sign()) {
+        state_.setPc(resolveLabelAddress(instruction.dst()));
+    } else {
+        advancePcUnlessHalted();
+    }
 }
 
 void CPU::executePush(const Instruction& instruction) {
     requireSingleOperand(instruction);
 
     const std::int64_t value = readOperandValue(instruction.dst());
+    pushValue(value);
 
-    ensureStackCanPush();
-
-    const std::size_t sp = state_.sp();
-
-    state_.memory().write(sp, value);
-    state_.setSp(sp + kStackSlotSize);
-    state_.advancePc();
+    advancePcUnlessHalted();
 }
 
 void CPU::executePop(const Instruction& instruction) {
     requireSingleOperand(instruction);
-    requireRegisterDestination(instruction);
+    requireRegisterDestination(instruction.dst());
 
-    ensureStackCanPop();
+    const std::int64_t value = popValue();
 
-    const std::size_t newSp = state_.sp() - kStackSlotSize;
-    const std::int64_t value = state_.memory().read(newSp);
+    writeRegisterDestination(instruction.dst(), value);
+    state_.flags().updateZeroAndSign(value);
 
-    state_.setSp(newSp);
-    state_.registers().set(instruction.dst().asRegister(), value);
-    state_.advancePc();
+    advancePcUnlessHalted();
 }
 
 void CPU::executeCall(const Instruction& instruction) {
     requireSingleOperand(instruction);
 
-    const std::size_t target = resolveLabelAddress(instruction.dst());
-
-    ensureStackCanPush();
-
-    const std::size_t sp = state_.sp();
     const std::size_t returnAddress = state_.pc() + 1;
+    pushValue(static_cast<std::int64_t>(returnAddress));
 
-    state_.memory().write(
-        sp,
-        static_cast<std::int64_t>(returnAddress)
-    );
-
-    state_.setSp(sp + kStackSlotSize);
-    state_.setPc(target);
+    state_.setPc(resolveLabelAddress(instruction.dst()));
 }
 
 void CPU::executeRet(const Instruction& instruction) {
     requireNoOperand(instruction);
 
-    ensureStackCanPop();
-
-    const std::size_t newSp = state_.sp() - kStackSlotSize;
-    const std::int64_t returnAddress = state_.memory().read(newSp);
+    const std::int64_t returnAddress = popValue();
 
     if (returnAddress < 0) {
-        throw std::runtime_error("Invalid return address");
+        throw std::runtime_error("Negative return address");
     }
 
-    const auto target = static_cast<std::size_t>(returnAddress);
-
-    if (target >= program_.size()) {
-        throw std::runtime_error("Return address out of program range");
-    }
-
-    state_.setSp(newSp);
-    state_.setPc(target);
+    state_.setPc(static_cast<std::size_t>(returnAddress));
 }
 
-void CPU::branchToLabel(const Operand& operand) {
-    const std::size_t target = resolveLabelAddress(operand);
-    state_.setPc(target);
+void CPU::executeAnd(const Instruction& instruction) {
+    requireTwoOperands(instruction);
+    requireRegisterDestination(instruction.dst());
+
+    const std::int64_t lhs = readOperandValue(instruction.dst());
+    const std::int64_t rhs = readOperandValue(instruction.src());
+    const std::int64_t result = lhs & rhs;
+
+    writeRegisterDestination(instruction.dst(), result);
+    state_.flags().updateZeroAndSign(result);
+
+    advancePcUnlessHalted();
 }
 
-void CPU::branchToLabelIf(const Operand& operand, bool condition) {
-    if (condition) {
-        branchToLabel(operand);
-    } else {
-        state_.advancePc();
-    }
+void CPU::executeOr(const Instruction& instruction) {
+    requireTwoOperands(instruction);
+    requireRegisterDestination(instruction.dst());
+
+    const std::int64_t lhs = readOperandValue(instruction.dst());
+    const std::int64_t rhs = readOperandValue(instruction.src());
+    const std::int64_t result = lhs | rhs;
+
+    writeRegisterDestination(instruction.dst(), result);
+    state_.flags().updateZeroAndSign(result);
+
+    advancePcUnlessHalted();
 }
 
-std::size_t CPU::resolveLabelAddress(const Operand& operand) const {
-    if (!operand.isLabel()) {
-        throw std::runtime_error("Branch target must be label operand");
-    }
+void CPU::executeXor(const Instruction& instruction) {
+    requireTwoOperands(instruction);
+    requireRegisterDestination(instruction.dst());
 
-    const std::string& label = operand.asLabel();
+    const std::int64_t lhs = readOperandValue(instruction.dst());
+    const std::int64_t rhs = readOperandValue(instruction.src());
+    const std::int64_t result = lhs ^ rhs;
 
-    const auto found = labels_.find(label);
+    writeRegisterDestination(instruction.dst(), result);
+    state_.flags().updateZeroAndSign(result);
 
-    if (found == labels_.end()) {
-        throw std::runtime_error("Unknown label: " + label);
-    }
+    advancePcUnlessHalted();
+}
 
-    const std::size_t address = found->second;
+void CPU::executeNot(const Instruction& instruction) {
+    requireSingleOperand(instruction);
+    requireRegisterDestination(instruction.dst());
 
-    if (address >= program_.size()) {
-        throw std::runtime_error("Label address out of program range: " + label);
-    }
+    const std::int64_t value = readOperandValue(instruction.dst());
+    const std::int64_t result = ~value;
 
-    return address;
+    writeRegisterDestination(instruction.dst(), result);
+    state_.flags().updateZeroAndSign(result);
+
+    advancePcUnlessHalted();
 }
 
 std::int64_t CPU::readOperandValue(const Operand& operand) const {
-    if (operand.isRegister()) {
+    switch (operand.type()) {
+    case OperandType::Register:
         return state_.registers().get(operand.asRegister());
-    }
 
-    if (operand.isImmediate()) {
+    case OperandType::Immediate:
         return operand.asImmediate();
-    }
 
-    if (operand.isMemoryAddress()) {
+    case OperandType::MemoryAddress:
         return state_.memory().read(operand.asMemoryAddress());
-    }
 
-    if (operand.isLabel()) {
-        throw std::runtime_error("Cannot read label operand as value");
+    default:
+        throw std::runtime_error("Operand cannot be read as a value");
     }
-
-    throw std::runtime_error("Cannot read empty operand");
 }
 
-void CPU::writeOperandValue(const Operand& operand, std::int64_t value) {
-    if (operand.isRegister()) {
-        state_.registers().set(operand.asRegister(), value);
-        return;
-    }
-
-    if (operand.isMemoryAddress()) {
-        state_.memory().write(operand.asMemoryAddress(), value);
-        return;
-    }
-
-    if (operand.isImmediate()) {
-        throw std::runtime_error("Cannot write to immediate operand");
-    }
-
-    if (operand.isLabel()) {
-        throw std::runtime_error("Cannot write to label operand");
-    }
-
-    throw std::runtime_error("Cannot write to empty operand");
+void CPU::writeRegisterDestination(
+    const Operand& operand,
+    std::int64_t value
+) {
+    requireRegisterDestination(operand);
+    state_.registers().set(operand.asRegister(), value);
 }
 
-void CPU::ensureStackCanPush() const {
+std::size_t CPU::resolveLabelAddress(const Operand& operand) const {
+    if (operand.type() != OperandType::Label) {
+        throw std::runtime_error("Jump target must be label");
+    }
+
+    const auto it = labels_.find(operand.asLabel());
+
+    if (it == labels_.end()) {
+        throw std::runtime_error("Undefined label: " + operand.asLabel());
+    }
+
+    return it->second;
+}
+
+void CPU::pushValue(std::int64_t value) {
     const std::size_t sp = state_.sp();
 
-    if (sp > state_.memory().size()) {
-        throw std::runtime_error("Stack pointer out of range");
-    }
-
-    if (kStackSlotSize > state_.memory().size() - sp) {
-        throw std::runtime_error("Stack overflow");
-    }
+    state_.memory().write(sp, value);
+    state_.setSp(sp + kStackSlotSize);
 }
 
-void CPU::ensureStackCanPop() const {
+std::int64_t CPU::popValue() {
     const std::size_t sp = state_.sp();
 
-    if (sp < CPUState::kDefaultStackBase + kStackSlotSize) {
+    if (sp < kStackSlotSize) {
         throw std::runtime_error("Stack underflow");
     }
 
-    if (sp > state_.memory().size()) {
-        throw std::runtime_error("Stack pointer out of range");
-    }
+    const std::size_t newSp = sp - kStackSlotSize;
+    state_.setSp(newSp);
+
+    return state_.memory().read(newSp);
 }
 
 void CPU::requireNoOperand(const Instruction& instruction) const {
-    if (instruction.hasDestination() || instruction.hasSource()) {
-        throw std::runtime_error(
-            opcodeToString(instruction.opcode())
-            + " does not accept operands"
-        );
-    }
-}
-
-void CPU::requireDestination(const Instruction& instruction) const {
-    if (!instruction.hasDestination()) {
-        throw std::runtime_error(
-            opcodeToString(instruction.opcode())
-            + " requires destination operand"
-        );
-    }
-}
-
-void CPU::requireSource(const Instruction& instruction) const {
-    if (!instruction.hasSource()) {
-        throw std::runtime_error(
-            opcodeToString(instruction.opcode())
-            + " requires source operand"
-        );
-    }
-}
-
-void CPU::requireRegisterDestination(const Instruction& instruction) const {
-    requireDestination(instruction);
-
-    if (!instruction.dst().isRegister()) {
-        throw std::runtime_error(
-            opcodeToString(instruction.opcode())
-            + " requires register destination operand"
-        );
-    }
-}
-
-void CPU::requireMemoryDestination(const Instruction& instruction) const {
-    requireDestination(instruction);
-
-    if (!instruction.dst().isMemoryAddress()) {
-        throw std::runtime_error(
-            opcodeToString(instruction.opcode())
-            + " requires memory destination operand"
-        );
-    }
-}
-
-void CPU::requireMemorySource(const Instruction& instruction) const {
-    requireSource(instruction);
-
-    if (!instruction.src().isMemoryAddress()) {
-        throw std::runtime_error(
-            opcodeToString(instruction.opcode())
-            + " requires memory source operand"
-        );
-    }
-}
-
-void CPU::requireLabelDestination(const Instruction& instruction) const {
-    requireDestination(instruction);
-
-    if (instruction.hasSource()) {
-        throw std::runtime_error(
-            opcodeToString(instruction.opcode())
-            + " does not accept source operand"
-        );
-    }
-
-    if (!instruction.dst().isLabel()) {
-        throw std::runtime_error(
-            opcodeToString(instruction.opcode())
-            + " requires label destination operand"
-        );
+    if (
+        instruction.dst().type() != OperandType::None ||
+        instruction.src().type() != OperandType::None
+    ) {
+        throw std::runtime_error("Instruction requires no operand");
     }
 }
 
 void CPU::requireSingleOperand(const Instruction& instruction) const {
-    requireDestination(instruction);
-
-    if (instruction.hasSource()) {
-        throw std::runtime_error(
-            opcodeToString(instruction.opcode())
-            + " accepts only one operand"
-        );
+    if (
+        instruction.dst().type() == OperandType::None ||
+        instruction.src().type() != OperandType::None
+    ) {
+        throw std::runtime_error("Instruction requires one operand");
     }
+}
+
+void CPU::requireTwoOperands(const Instruction& instruction) const {
+    if (
+        instruction.dst().type() == OperandType::None ||
+        instruction.src().type() == OperandType::None
+    ) {
+        throw std::runtime_error("Instruction requires two operands");
+    }
+}
+
+void CPU::requireRegisterDestination(const Operand& operand) const {
+    if (operand.type() != OperandType::Register) {
+        throw std::runtime_error("Destination must be register");
+    }
+}
+
+void CPU::advancePcUnlessHalted() {
+    if (!state_.halted()) {
+        state_.advancePc();
+    }
+}
+
+void CPU::setRuntimeError(const std::string& message) {
+    state_.setError(message);
 }
 
 } // namespace zero_cpu

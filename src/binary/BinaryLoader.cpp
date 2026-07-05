@@ -17,7 +17,6 @@ LoadedBinaryImage BinaryLoader::loadIntoMemory(
     memory.writeBytes(codeBase, program.code);
 
     LoadedBinaryImage image;
-
     image.code_base = codeBase;
     image.entry_point =
         codeBase + static_cast<std::size_t>(program.header.entry_point);

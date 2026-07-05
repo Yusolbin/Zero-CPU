@@ -328,6 +328,63 @@ int loadBinaryFile(const std::string& inputPath) {
     return 0;
 }
 
+int cpuLoadBinaryFile(const std::string& inputPath) {
+    using namespace zero_cpu;
+    using namespace zero_cpu::binary;
+
+    BinaryReader reader;
+    BinaryProgram program = reader.readFile(inputPath);
+
+    CPU cpu;
+    cpu.loadBinaryProgram(program);
+
+    std::cout << "Input binary file: " << inputPath << "\n\n";
+
+    printBinaryHeader(program);
+    std::cout << "\n";
+
+    std::cout << "=== CPU Binary Load State ===\n";
+    std::cout << "Has Binary Program: "
+              << (cpu.hasBinaryProgram() ? "true" : "false")
+              << "\n";
+
+    std::cout << "Code Base: "
+              << cpu.binaryCodeBase()
+              << "\n";
+
+    std::cout << "Entry Point: "
+              << cpu.binaryEntryPoint()
+              << "\n";
+
+    std::cout << "Code Size: "
+              << cpu.binaryCodeSize()
+              << " bytes\n";
+
+    std::cout << "Current PC: "
+              << cpu.state().pc()
+              << "\n\n";
+
+    std::cout << "=== CPU State ===\n";
+    std::cout << cpu.state().summary();
+
+    const std::size_t previewCount =
+        std::min(cpu.binaryCodeSize(), kLoadedMemoryPreviewCount);
+
+    std::cout << "=== CPU Memory Preview ===\n";
+    std::cout << "Memory[0.."
+              << (previewCount == 0 ? 0 : previewCount - 1)
+              << "]: "
+              << cpu.state().memory().dumpRange(0, previewCount)
+              << "\n\n";
+
+    printDecodedInstructions(program.code);
+    std::cout << "\n";
+
+    std::cout << "CPU binary load test finished successfully.\n";
+
+    return 0;
+}
+
 int assembleToBinary(
     const std::string& inputPath,
     const std::string& outputPath
@@ -443,6 +500,7 @@ void printUsage() {
     std::cout << "  zero_cli assemble <input.zasm> <output.zbin>\n";
     std::cout << "  zero_cli dump-binary <input.zbin>\n";
     std::cout << "  zero_cli load-binary <input.zbin>\n";
+    std::cout << "  zero_cli cpu-load-binary <input.zbin>\n";
 }
 
 } // namespace
@@ -494,6 +552,16 @@ int main(int argc, char* argv[]) {
                 }
 
                 return loadBinaryFile(argv[2]);
+            }
+
+            if (command == "cpu-load-binary") {
+                if (argc != 3) {
+                    std::cerr << "Invalid cpu-load-binary command.\n\n";
+                    printUsage();
+                    return 1;
+                }
+
+                return cpuLoadBinaryFile(argv[2]);
             }
         }
 

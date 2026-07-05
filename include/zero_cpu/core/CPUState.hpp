@@ -33,10 +33,12 @@ public:
 
     bool halted() const;
     void halt();
+    void setHalted(bool value);
 
     bool hasError() const;
     const std::string& errorMessage() const;
-    void setError(std::string message);
+    void setError(const std::string& message);
+    void clearError();
 
     void reset();
 
@@ -47,11 +49,11 @@ private:
     Memory memory_;
     Flags flags_;
 
-    std::size_t pc_;
-    std::size_t sp_;
+    std::size_t pc_ = 0;
+    std::size_t sp_ = kDefaultStackBase;
 
-    bool halted_;
-    bool error_;
+    bool halted_ = false;
+    bool has_error_ = false;
     std::string error_message_;
 };
 

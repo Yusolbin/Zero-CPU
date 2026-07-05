@@ -1,19 +1,11 @@
 #include "zero_cpu/core/CPUState.hpp"
 
 #include <sstream>
-#include <utility>
 
 namespace zero_cpu {
 
-CPUState::CPUState()
-    : registers_(),
-      memory_(),
-      flags_(),
-      pc_(0),
-      sp_(kDefaultStackBase),
-      halted_(false),
-      error_(false),
-      error_message_() {
+CPUState::CPUState() {
+    reset();
 }
 
 RegisterFile& CPUState::registers() {
@@ -68,18 +60,27 @@ void CPUState::halt() {
     halted_ = true;
 }
 
+void CPUState::setHalted(bool value) {
+    halted_ = value;
+}
+
 bool CPUState::hasError() const {
-    return error_;
+    return has_error_;
 }
 
 const std::string& CPUState::errorMessage() const {
     return error_message_;
 }
 
-void CPUState::setError(std::string message) {
-    error_ = true;
+void CPUState::setError(const std::string& message) {
+    has_error_ = true;
+    error_message_ = message;
     halted_ = true;
-    error_message_ = std::move(message);
+}
+
+void CPUState::clearError() {
+    has_error_ = false;
+    error_message_.clear();
 }
 
 void CPUState::reset() {
@@ -91,25 +92,23 @@ void CPUState::reset() {
     sp_ = kDefaultStackBase;
 
     halted_ = false;
-    error_ = false;
+    has_error_ = false;
     error_message_.clear();
 }
 
 std::string CPUState::summary() const {
     std::ostringstream oss;
 
-    oss << "PC=" << pc_
-        << " SP=" << sp_
-        << " halted=" << (halted_ ? "true" : "false")
-        << " error=" << (error_ ? "true" : "false")
-        << "\n";
+    oss << "PC = " << pc_ << "\n";
+    oss << "SP = " << sp_ << "\n";
+    oss << "Halted = " << (halted_ ? "true" : "false") << "\n";
+
+    if (has_error_) {
+        oss << "Error = " << error_message_ << "\n";
+    }
 
     oss << "Registers: " << registers_.toString() << "\n";
     oss << "Flags: " << flags_.toString() << "\n";
-
-    if (error_) {
-        oss << "Error: " << error_message_ << "\n";
-    }
 
     return oss.str();
 }

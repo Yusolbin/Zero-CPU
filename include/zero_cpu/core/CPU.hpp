@@ -1,8 +1,8 @@
 #pragma once
 
+#include "zero_cpu/binary/BinaryProgram.hpp"
 #include "zero_cpu/core/CPUState.hpp"
 #include "zero_cpu/isa/Instruction.hpp"
-#include "zero_cpu/isa/Operand.hpp"
 #include "zero_cpu/trace/TraceLogger.hpp"
 
 #include <cstddef>
@@ -13,19 +13,23 @@
 
 namespace zero_cpu {
 
-
 class CPU {
 public:
     using LabelTable = std::unordered_map<std::string, std::size_t>;
 
     CPU();
 
-    void loadProgram(std::vector<Instruction> program);
-    void loadProgram(std::vector<Instruction> program, LabelTable labels);
-
-    void setLabels(LabelTable labels);
-
     void reset();
+
+    void loadProgram(
+        const std::vector<Instruction>& program,
+        const LabelTable& labels
+    );
+
+    void loadBinaryProgram(const binary::BinaryProgram& program);
+
+    void step();
+    void run(std::size_t maxSteps = 1000);
 
     CPUState& state();
     const CPUState& state() const;
@@ -33,17 +37,26 @@ public:
     const std::vector<Instruction>& program() const;
     const LabelTable& labels() const;
 
-    const TraceLogger& traceLogger() const;
     TraceLogger& traceLogger();
+    const TraceLogger& traceLogger() const;
 
-    bool step();
-    void run(std::size_t max_steps = 100000);
+    bool hasBinaryProgram() const;
+    std::size_t binaryCodeBase() const;
+    std::size_t binaryEntryPoint() const;
+    std::size_t binaryCodeSize() const;
 
 private:
+    static constexpr std::size_t kStackSlotSize = 8;
+
     CPUState state_;
     std::vector<Instruction> program_;
     LabelTable labels_;
     TraceLogger trace_logger_;
+
+    bool has_binary_program_ = false;
+    std::size_t binary_code_base_ = 0;
+    std::size_t binary_entry_point_ = 0;
+    std::size_t binary_code_size_ = 0;
 
     void execute(const Instruction& instruction);
 
@@ -72,26 +85,29 @@ private:
     void executeCall(const Instruction& instruction);
     void executeRet(const Instruction& instruction);
 
-    void branchToLabel(const Operand& operand);
-    void branchToLabelIf(const Operand& operand, bool condition);
+    void executeAnd(const Instruction& instruction);
+    void executeOr(const Instruction& instruction);
+    void executeXor(const Instruction& instruction);
+    void executeNot(const Instruction& instruction);
+
+    std::int64_t readOperandValue(const Operand& operand) const;
+    void writeRegisterDestination(
+        const Operand& operand,
+        std::int64_t value
+    );
 
     std::size_t resolveLabelAddress(const Operand& operand) const;
 
-    std::int64_t readOperandValue(const Operand& operand) const;
-    void writeOperandValue(const Operand& operand, std::int64_t value);
-
-    void ensureStackCanPush() const;
-    void ensureStackCanPop() const;
+    void pushValue(std::int64_t value);
+    std::int64_t popValue();
 
     void requireNoOperand(const Instruction& instruction) const;
-    void requireDestination(const Instruction& instruction) const;
-    void requireSource(const Instruction& instruction) const;
-
-    void requireRegisterDestination(const Instruction& instruction) const;
-    void requireMemoryDestination(const Instruction& instruction) const;
-    void requireMemorySource(const Instruction& instruction) const;
-    void requireLabelDestination(const Instruction& instruction) const;
     void requireSingleOperand(const Instruction& instruction) const;
+    void requireTwoOperands(const Instruction& instruction) const;
+    void requireRegisterDestination(const Operand& operand) const;
+
+    void advancePcUnlessHalted();
+    void setRuntimeError(const std::string& message);
 };
 
 } // namespace zero_cpu
