@@ -4,19 +4,67 @@
 
 #include <windows.h>
 
+#include <cstddef>
 #include <exception>
 #include <sstream>
 #include <string>
 
 namespace {
 
-constexpr int kWindowWidth = 1000;
-constexpr int kWindowHeight = 700;
+constexpr int kWindowWidth = 1180;
+constexpr int kWindowHeight = 760;
+
+constexpr int kIdInputEdit = 1001;
+constexpr int kIdLoadButton = 1002;
+constexpr int kIdStepButton = 1003;
+constexpr int kIdRunButton = 1004;
+constexpr int kIdResetButton = 1005;
+constexpr int kIdStateEdit = 1006;
+constexpr int kIdTraceEdit = 1007;
+
+constexpr std::size_t kDataViewStart = 96;
+constexpr std::size_t kDataViewCount = 16;
+
+constexpr std::size_t kStackViewStart = 2048;
+constexpr std::size_t kStackViewCount = 32;
 
 HWND g_inputEdit = nullptr;
-HWND g_outputEdit = nullptr;
+HWND g_loadButton = nullptr;
+HWND g_stepButton = nullptr;
 HWND g_runButton = nullptr;
 HWND g_resetButton = nullptr;
+HWND g_stateEdit = nullptr;
+HWND g_traceEdit = nullptr;
+
+zero_cpu::CPU g_cpu;
+bool g_programLoaded = false;
+std::string g_loadedPath;
+
+std::string normalizeNewlines(const std::string& text) {
+    std::string result;
+    result.reserve(text.size() + 64);
+
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const char ch = text[i];
+
+        if (ch == '\r') {
+            result += '\r';
+
+            if (i + 1 < text.size() && text[i + 1] == '\n') {
+                result += '\n';
+                ++i;
+            } else {
+                result += '\n';
+            }
+        } else if (ch == '\n') {
+            result += "\r\n";
+        } else {
+            result += ch;
+        }
+    }
+
+    return result;
+}
 
 std::string getWindowTextString(HWND hwnd) {
     const int length = GetWindowTextLengthA(hwnd);
@@ -25,111 +73,323 @@ std::string getWindowTextString(HWND hwnd) {
         return {};
     }
 
-    std::string text(static_cast<std::size_t>(length), '\0');
-    GetWindowTextA(hwnd, text.data(), length + 1);
+    std::string buffer(static_cast<std::size_t>(length) + 1, '\0');
+    GetWindowTextA(hwnd, buffer.data(), length + 1);
+    buffer.resize(static_cast<std::size_t>(length));
 
-    return text;
+    return buffer;
 }
 
-void setOutputText(const std::string& text) {
-    SetWindowTextA(g_outputEdit, text.c_str());
+void setEditText(HWND hwnd, const std::string& text) {
+    const std::string normalized = normalizeNewlines(text);
+    SetWindowTextA(hwnd, normalized.c_str());
 }
 
-std::string runAssemblyFile(const std::string& inputPath) {
+void appendTraceText(const std::string& text) {
+    const std::string normalized = normalizeNewlines(text);
+
+    const int length = GetWindowTextLengthA(g_traceEdit);
+    SendMessageA(g_traceEdit, EM_SETSEL, length, length);
+    SendMessageA(
+        g_traceEdit,
+        EM_REPLACESEL,
+        FALSE,
+        reinterpret_cast<LPARAM>(normalized.c_str())
+    );
+}
+
+std::string makeRegisterView() {
     using namespace zero_cpu;
 
     std::ostringstream oss;
 
-    oss << "Zero-CPU Studio v0.1\n";
-    oss << "Input file: " << inputPath << "\r\n\r\n";
+    const auto& registers = g_cpu.state().registers();
+
+    oss << "Registers\n";
+    oss << "R0 = " << registers.get(RegisterName::R0) << "\n";
+    oss << "R1 = " << registers.get(RegisterName::R1) << "\n";
+    oss << "R2 = " << registers.get(RegisterName::R2) << "\n";
+    oss << "R3 = " << registers.get(RegisterName::R3) << "\n";
+    oss << "R4 = " << registers.get(RegisterName::R4) << "\n";
+    oss << "R5 = " << registers.get(RegisterName::R5) << "\n";
+    oss << "R6 = " << registers.get(RegisterName::R6) << "\n";
+    oss << "R7 = " << registers.get(RegisterName::R7) << "\n";
+
+    return oss.str();
+}
+
+std::string makeMemoryView() {
+    std::ostringstream oss;
+
+    oss << "Memory View\n";
+    oss << "Memory[96..111] = "
+        << g_cpu.state().memory().dumpRange(
+               kDataViewStart,
+               kDataViewCount
+           )
+        << "\n";
+
+    oss << "Stack[2048..2079] = "
+        << g_cpu.state().memory().dumpRange(
+               kStackViewStart,
+               kStackViewCount
+           )
+        << "\n";
+
+    oss << "Memory[100] = "
+        << g_cpu.state().memory().read(100)
+        << "\n";
+
+    oss << "Memory[2048] = "
+        << g_cpu.state().memory().read(2048)
+        << "\n";
+
+    return oss.str();
+}
+
+std::string makeStateView() {
+    std::ostringstream oss;
+
+    oss << "Zero-CPU Studio v0.2\n";
+    oss << "Mode: Assembly Step Debugger\n";
+
+    if (g_programLoaded) {
+        oss << "Loaded: " << g_loadedPath << "\n";
+    } else {
+        oss << "Loaded: false\n";
+    }
+
+    oss << "\n";
+
+    oss << "CPU Core State\n";
+    oss << "PC = " << g_cpu.state().pc() << "\n";
+    oss << "SP = " << g_cpu.state().sp() << "\n";
+    oss << "Halted = "
+        << (g_cpu.state().halted() ? "true" : "false")
+        << "\n";
+
+    if (g_cpu.state().hasError()) {
+        oss << "Error = "
+            << g_cpu.state().errorMessage()
+            << "\n";
+    }
+
+    oss << "Flags = "
+        << g_cpu.state().flags().toString()
+        << "\n";
+
+    oss << "\n";
+    oss << makeRegisterView();
+
+    oss << "\n";
+    oss << makeMemoryView();
+
+    return oss.str();
+}
+
+void refreshStateView() {
+    setEditText(g_stateEdit, makeStateView());
+}
+
+void refreshTraceView() {
+    std::ostringstream oss;
+
+    oss << "Trace Log\n";
+    oss << "---------\n";
+
+    if (g_cpu.traceLogger().empty()) {
+        oss << "(empty)\n";
+    } else {
+        oss << g_cpu.traceLogger().compactString();
+    }
+
+    setEditText(g_traceEdit, oss.str());
+}
+
+bool loadAssemblyProgram(const std::string& inputPath) {
+    using namespace zero_cpu;
 
     try {
         Assembler assembler;
         AssembledProgram assembled = assembler.assembleFile(inputPath);
 
-        CPU cpu;
-        cpu.loadProgram(assembled.instructions, assembled.labels);
-        cpu.run(1000);
+        g_cpu.loadProgram(assembled.instructions, assembled.labels);
+        g_programLoaded = true;
+        g_loadedPath = inputPath;
 
-        oss << "=== Program Info ===\r\n";
+        std::ostringstream oss;
+        oss << "Loaded assembly program.\n";
+        oss << "Path: " << inputPath << "\n";
         oss << "Instruction count: "
             << assembled.instructions.size()
-            << "\r\n";
-
+            << "\n";
         oss << "Label count: "
             << assembled.labels.size()
-            << "\r\n\r\n";
+            << "\n\n";
 
-        oss << "=== Final CPU State ===\r\n";
-        std::string summary = cpu.state().summary();
+        appendTraceText(oss.str());
 
-        for (char ch : summary) {
-            if (ch == '\n') {
-                oss << "\r\n";
-            } else {
-                oss << ch;
-            }
-        }
+        refreshStateView();
+        refreshTraceView();
 
-        oss << "\r\n";
-
-        if (cpu.state().hasError()) {
-            oss << "=== Execution Result ===\r\n";
-            oss << "FAILED\r\n";
-            oss << "Error: "
-                << cpu.state().errorMessage()
-                << "\r\n";
-
-            return oss.str();
-        }
-
-        const auto finalR1 =
-            cpu.state().registers().get(RegisterName::R1);
-
-        const auto finalR2 =
-            cpu.state().registers().get(RegisterName::R2);
-
-        oss << "=== Final Check ===\r\n";
-        oss << "R1 = " << finalR1 << "\r\n";
-        oss << "R2 = " << finalR2 << "\r\n";
-        oss << "SP = " << cpu.state().sp() << "\r\n";
-        oss << "Memory[100] = "
-            << cpu.state().memory().read(100)
-            << "\r\n";
-        oss << "Memory[2048] = "
-            << cpu.state().memory().read(2048)
-            << "\r\n\r\n";
-
-        oss << "=== Execution Result ===\r\n";
-        oss << "SUCCESS\r\n";
+        return true;
     } catch (const std::exception& ex) {
-        oss << "=== Studio Error ===\r\n";
-        oss << ex.what() << "\r\n";
-    }
+        g_programLoaded = false;
+        g_loadedPath.clear();
 
-    return oss.str();
+        std::ostringstream oss;
+        oss << "Load failed.\n";
+        oss << "Error: " << ex.what() << "\n";
+
+        setEditText(g_traceEdit, oss.str());
+        refreshStateView();
+
+        return false;
+    }
 }
 
-void onRunClicked() {
+void onLoadClicked() {
     const std::string inputPath = getWindowTextString(g_inputEdit);
 
     if (inputPath.empty()) {
-        setOutputText("Input path is empty.\r\n");
+        setEditText(g_traceEdit, "Input path is empty.\n");
         return;
     }
 
-    const std::string result = runAssemblyFile(inputPath);
-    setOutputText(result);
+    loadAssemblyProgram(inputPath);
+}
+
+void onStepClicked() {
+    if (!g_programLoaded) {
+        const std::string inputPath = getWindowTextString(g_inputEdit);
+
+        if (inputPath.empty()) {
+            setEditText(g_traceEdit, "Input path is empty.\n");
+            return;
+        }
+
+        if (!loadAssemblyProgram(inputPath)) {
+            return;
+        }
+    }
+
+    if (g_cpu.state().halted()) {
+        appendTraceText("\nProgram is already halted.\n");
+        refreshStateView();
+        refreshTraceView();
+        return;
+    }
+
+    const std::size_t pcBefore = g_cpu.state().pc();
+
+    std::ostringstream stepLog;
+    stepLog << "\n[Studio Step]\n";
+    stepLog << "PC before = " << pcBefore << "\n";
+
+    if (pcBefore < g_cpu.program().size()) {
+        stepLog << "Instruction = "
+                << g_cpu.program()[pcBefore].toString()
+                << "\n";
+    } else {
+        stepLog << "Instruction = <PC out of range>\n";
+    }
+
+    g_cpu.step();
+
+    stepLog << "PC after = "
+            << g_cpu.state().pc()
+            << "\n";
+
+    if (g_cpu.state().hasError()) {
+        stepLog << "Error = "
+                << g_cpu.state().errorMessage()
+                << "\n";
+    }
+
+    appendTraceText(stepLog.str());
+
+    refreshStateView();
+    refreshTraceView();
+}
+
+void onRunClicked() {
+    if (!g_programLoaded) {
+        const std::string inputPath = getWindowTextString(g_inputEdit);
+
+        if (inputPath.empty()) {
+            setEditText(g_traceEdit, "Input path is empty.\n");
+            return;
+        }
+
+        if (!loadAssemblyProgram(inputPath)) {
+            return;
+        }
+    }
+
+    std::ostringstream runLog;
+    runLog << "\n[Studio Run]\n";
+
+    std::size_t stepCount = 0;
+
+    while (!g_cpu.state().halted()) {
+        const std::size_t pcBefore = g_cpu.state().pc();
+
+        runLog << "Step " << stepCount
+               << " | PC=" << pcBefore;
+
+        if (pcBefore < g_cpu.program().size()) {
+            runLog << " | "
+                   << g_cpu.program()[pcBefore].toString();
+        } else {
+            runLog << " | <PC out of range>";
+        }
+
+        runLog << "\n";
+
+        g_cpu.step();
+
+        if (g_cpu.state().hasError()) {
+            runLog << "Execution failed: "
+                   << g_cpu.state().errorMessage()
+                   << "\n";
+            break;
+        }
+
+        ++stepCount;
+
+        if (stepCount > 1000) {
+            runLog << "Step limit reached.\n";
+            break;
+        }
+    }
+
+    if (!g_cpu.state().hasError() && g_cpu.state().halted()) {
+        runLog << "Execution finished successfully.\n";
+    }
+
+    appendTraceText(runLog.str());
+
+    refreshStateView();
+    refreshTraceView();
 }
 
 void onResetClicked() {
+    g_cpu.reset();
+    g_programLoaded = false;
+    g_loadedPath.clear();
+
     SetWindowTextA(g_inputEdit, "examples\\function_call.zasm");
-    setOutputText(
-        "Zero-CPU Studio v0.1\r\n"
-        "\r\n"
-        "Ready.\r\n"
-        "Click [Run Assembly] to execute examples\\function_call.zasm.\r\n"
+
+    setEditText(
+        g_traceEdit,
+        "Zero-CPU Studio v0.2\n"
+        "\n"
+        "Ready.\n"
+        "1. Click [Load Assembly]\n"
+        "2. Click [Step] or [Run]\n"
     );
+
+    refreshStateView();
 }
 
 HFONT createDefaultFont() {
@@ -194,10 +454,40 @@ LRESULT CALLBACK windowProc(
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
             20,
             50,
-            620,
+            560,
             32,
             hwnd,
-            reinterpret_cast<HMENU>(1001),
+            reinterpret_cast<HMENU>(kIdInputEdit),
+            nullptr,
+            nullptr
+        );
+
+        g_loadButton = CreateWindowExA(
+            0,
+            "BUTTON",
+            "Load Assembly",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            600,
+            50,
+            130,
+            32,
+            hwnd,
+            reinterpret_cast<HMENU>(kIdLoadButton),
+            nullptr,
+            nullptr
+        );
+
+        g_stepButton = CreateWindowExA(
+            0,
+            "BUTTON",
+            "Step",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            740,
+            50,
+            90,
+            32,
+            hwnd,
+            reinterpret_cast<HMENU>(kIdStepButton),
             nullptr,
             nullptr
         );
@@ -205,14 +495,14 @@ LRESULT CALLBACK windowProc(
         g_runButton = CreateWindowExA(
             0,
             "BUTTON",
-            "Run Assembly",
+            "Run",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            660,
+            840,
             50,
-            140,
+            90,
             32,
             hwnd,
-            reinterpret_cast<HMENU>(1002),
+            reinterpret_cast<HMENU>(kIdRunButton),
             nullptr,
             nullptr
         );
@@ -222,12 +512,12 @@ LRESULT CALLBACK windowProc(
             "BUTTON",
             "Reset",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            820,
+            940,
             50,
-            120,
+            90,
             32,
             hwnd,
-            reinterpret_cast<HMENU>(1003),
+            reinterpret_cast<HMENU>(kIdResetButton),
             nullptr,
             nullptr
         );
@@ -235,11 +525,11 @@ LRESULT CALLBACK windowProc(
         CreateWindowExA(
             0,
             "STATIC",
-            "Execution Output:",
+            "CPU / Register / Memory View:",
             WS_CHILD | WS_VISIBLE,
             20,
             100,
-            200,
+            300,
             28,
             hwnd,
             nullptr,
@@ -247,7 +537,7 @@ LRESULT CALLBACK windowProc(
             nullptr
         );
 
-        g_outputEdit = CreateWindowExA(
+        g_stateEdit = CreateWindowExA(
             WS_EX_CLIENTEDGE,
             "EDIT",
             "",
@@ -262,18 +552,59 @@ LRESULT CALLBACK windowProc(
                 ES_READONLY,
             20,
             130,
-            940,
-            500,
+            540,
+            560,
             hwnd,
-            reinterpret_cast<HMENU>(1004),
+            reinterpret_cast<HMENU>(kIdStateEdit),
+            nullptr,
+            nullptr
+        );
+
+        CreateWindowExA(
+            0,
+            "STATIC",
+            "Trace / Execution Log:",
+            WS_CHILD | WS_VISIBLE,
+            590,
+            100,
+            300,
+            28,
+            hwnd,
+            nullptr,
+            nullptr,
+            nullptr
+        );
+
+        g_traceEdit = CreateWindowExA(
+            WS_EX_CLIENTEDGE,
+            "EDIT",
+            "",
+            WS_CHILD |
+                WS_VISIBLE |
+                WS_VSCROLL |
+                WS_HSCROLL |
+                ES_LEFT |
+                ES_MULTILINE |
+                ES_AUTOVSCROLL |
+                ES_AUTOHSCROLL |
+                ES_READONLY,
+            590,
+            130,
+            540,
+            560,
+            hwnd,
+            reinterpret_cast<HMENU>(kIdTraceEdit),
             nullptr,
             nullptr
         );
 
         applyFont(g_inputEdit, font);
-        applyFont(g_outputEdit, font);
+        applyFont(g_loadButton, font);
+        applyFont(g_stepButton, font);
         applyFont(g_runButton, font);
         applyFont(g_resetButton, font);
+        applyFont(g_stateEdit, font);
+        applyFont(g_traceEdit, font);
 
         onResetClicked();
 
@@ -283,12 +614,22 @@ LRESULT CALLBACK windowProc(
     case WM_COMMAND: {
         const int controlId = LOWORD(wParam);
 
-        if (controlId == 1002) {
+        if (controlId == kIdLoadButton) {
+            onLoadClicked();
+            return 0;
+        }
+
+        if (controlId == kIdStepButton) {
+            onStepClicked();
+            return 0;
+        }
+
+        if (controlId == kIdRunButton) {
             onRunClicked();
             return 0;
         }
 
-        if (controlId == 1003) {
+        if (controlId == kIdResetButton) {
             onResetClicked();
             return 0;
         }
