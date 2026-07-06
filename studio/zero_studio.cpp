@@ -210,6 +210,31 @@ std::string makeRegisterView() {
     return oss.str();
 }
 
+std::string makeFinalCheckView() {
+    using namespace zero_cpu;
+
+    std::ostringstream oss;
+
+    oss << "Final Check\n";
+    oss << "R1 = "
+        << g_cpu.state().registers().get(RegisterName::R1)
+        << "\n";
+    oss << "R2 = "
+        << g_cpu.state().registers().get(RegisterName::R2)
+        << "\n";
+    oss << "SP = "
+        << g_cpu.state().sp()
+        << "\n";
+    oss << "Memory[100] = "
+        << g_cpu.state().memory().read(100)
+        << "\n";
+    oss << "Memory[2048] = "
+        << g_cpu.state().memory().read(2048)
+        << "\n";
+
+    return oss.str();
+}
+
 std::string makeMemoryView() {
     std::ostringstream oss;
 
@@ -282,7 +307,7 @@ std::string makeBinaryInfoView() {
 std::string makeStateView() {
     std::ostringstream oss;
 
-    oss << "Zero-CPU Studio v0.3\n";
+    oss << "Zero-CPU Studio v0.4\n";
     oss << "Mode: " << modeToString(g_mode) << "\n";
 
     if (g_programLoaded) {
@@ -320,6 +345,9 @@ std::string makeStateView() {
 
     oss << "\n";
     oss << makeMemoryView();
+
+    oss << "\n";
+    oss << makeFinalCheckView();
 
     return oss.str();
 }
@@ -568,6 +596,9 @@ void onRunClicked() {
         runLog << "Execution finished successfully.\n";
     }
 
+    runLog << "\n";
+    runLog << makeFinalCheckView();
+
     appendTraceText(runLog.str());
     refreshStateView();
 }
@@ -582,7 +613,7 @@ void onResetClicked() {
 
     setEditText(
         g_traceEdit,
-        "Zero-CPU Studio v0.3\n"
+        "Zero-CPU Studio v0.4\n"
         "\n"
         "Ready.\n"
         "Assembly:\n"

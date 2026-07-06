@@ -18,6 +18,7 @@
 #include <exception>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -66,6 +67,29 @@ void printMemoryViews(const zero_cpu::CPU& cpu) {
                      kStackViewStart,
                      kStackViewCount
                  )
+              << "\n";
+}
+
+void printFinalCheck(const zero_cpu::CPU& cpu) {
+    using namespace zero_cpu;
+
+    const auto finalR1 =
+        cpu.state().registers().get(RegisterName::R1);
+
+    const auto finalR2 =
+        cpu.state().registers().get(RegisterName::R2);
+
+    std::cout << "Final Check:\n";
+    std::cout << "R1 = " << finalR1 << "\n";
+    std::cout << "R2 = " << finalR2 << "\n";
+    std::cout << "SP = " << cpu.state().sp() << "\n";
+
+    std::cout << "Memory[100] = "
+              << cpu.state().memory().read(100)
+              << "\n";
+
+    std::cout << "Memory[2048] = "
+              << cpu.state().memory().read(2048)
               << "\n";
 }
 
@@ -182,6 +206,52 @@ void printDecodedInstruction(
               << instruction.src_payload;
 
     std::cout << "\n";
+}
+
+std::string decodedInstructionToString(
+    const zero_cpu::DecodedInstruction& instruction
+) {
+    std::ostringstream oss;
+
+    oss << "opcode=0x"
+        << std::hex
+        << std::setw(2)
+        << std::setfill('0')
+        << static_cast<int>(zero_cpu::encodeOpcode(instruction.opcode))
+        << std::dec
+        << std::setfill(' ');
+
+    oss << " | dst_type="
+        << zero_cpu::toString(instruction.dst_type)
+        << " | dst_payload="
+        << instruction.dst_payload;
+
+    oss << " | src_type="
+        << zero_cpu::toString(instruction.src_type)
+        << " | src_payload="
+        << instruction.src_payload;
+
+    return oss.str();
+}
+
+std::string currentBinaryInstructionText(const zero_cpu::CPU& cpu) {
+    using namespace zero_cpu;
+    using namespace zero_cpu::binary;
+
+    try {
+        const std::size_t pc = cpu.state().pc();
+
+        const std::vector<std::uint8_t> instructionBytes =
+            cpu.state().memory().readBytes(pc, kInstructionSize);
+
+        InstructionDecoder decoder;
+        const DecodedInstruction decoded =
+            decoder.decodeInstruction(instructionBytes);
+
+        return decodedInstructionToString(decoded);
+    } catch (const std::exception& ex) {
+        return std::string("<decode failed: ") + ex.what() + ">";
+    }
 }
 
 void printDecodedInstructions(const std::vector<std::uint8_t>& code) {
@@ -371,10 +441,17 @@ int cpuLoadBinaryFile(const std::string& inputPath) {
         std::min(cpu.binaryCodeSize(), kLoadedMemoryPreviewCount);
 
     std::cout << "=== CPU Memory Preview ===\n";
-    std::cout << "Memory[0.."
-              << (previewCount == 0 ? 0 : previewCount - 1)
+    std::cout << "Memory["
+              << cpu.binaryCodeBase()
+              << ".."
+              << (previewCount == 0
+                      ? cpu.binaryCodeBase()
+                      : cpu.binaryCodeBase() + previewCount - 1)
               << "]: "
-              << cpu.state().memory().dumpRange(0, previewCount)
+              << cpu.state().memory().dumpRange(
+                     cpu.binaryCodeBase(),
+                     previewCount
+                 )
               << "\n\n";
 
     printDecodedInstructions(program.code);
@@ -407,6 +484,8 @@ int runBinaryFile(const std::string& inputPath) {
     while (!cpu.state().halted()) {
         std::cout << "Step " << stepCount
                   << " | PC=" << cpu.state().pc()
+                  << " | "
+                  << currentBinaryInstructionText(cpu)
                   << "\n";
 
         cpu.step();
@@ -417,17 +496,27 @@ int runBinaryFile(const std::string& inputPath) {
         if (cpu.state().hasError()) {
             std::cout << "Execution failed: "
                       << cpu.state().errorMessage()
-                      << "\n";
+                      << "\n\n";
+            printFinalCheck(cpu);
             return 1;
         }
 
         ++stepCount;
 
-        if (stepCount > 100) {
-            std::cout << "Step limit reached in binary execution.\n";
+        if (stepCount > 1000) {
+            std::cout << "Step limit reached in binary execution.\n\n";
+            printFinalCheck(cpu);
             return 1;
         }
     }
+
+    std::cout << "=== Binary Final CPU State ===\n";
+    std::cout << cpu.state().summary();
+    printMemoryViews(cpu);
+    std::cout << "\n";
+
+    printFinalCheck(cpu);
+    std::cout << "\n";
 
     std::cout << "Binary execution finished successfully.\n";
 
@@ -516,24 +605,7 @@ int runAssemblyProgram(const std::string& inputPath) {
     std::cout << "=== Compact Trace Log ===\n";
     std::cout << cpu.traceLogger().compactString() << "\n";
 
-    const auto finalR1 =
-        cpu.state().registers().get(RegisterName::R1);
-
-    const auto finalR2 =
-        cpu.state().registers().get(RegisterName::R2);
-
-    std::cout << "Final Check:\n";
-    std::cout << "R1 = " << finalR1 << "\n";
-    std::cout << "R2 = " << finalR2 << "\n";
-    std::cout << "SP = " << cpu.state().sp() << "\n";
-
-    std::cout << "Memory[100] = "
-              << cpu.state().memory().read(100)
-              << "\n";
-
-    std::cout << "Memory[2048] = "
-              << cpu.state().memory().read(2048)
-              << "\n";
+    printFinalCheck(cpu);
 
     std::cout << "\nExecution finished successfully.\n";
 
