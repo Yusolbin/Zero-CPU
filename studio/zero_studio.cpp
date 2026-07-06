@@ -1,26 +1,35 @@
 #include "zero_cpu/assembler/Assembler.hpp"
+#include "zero_cpu/binary/BinaryFormat.hpp"
+#include "zero_cpu/binary/BinaryProgram.hpp"
+#include "zero_cpu/binary/BinaryReader.hpp"
 #include "zero_cpu/core/CPU.hpp"
 #include "zero_cpu/core/RegisterFile.hpp"
+#include "zero_cpu/isa/EncodedInstruction.hpp"
+#include "zero_cpu/isa/InstructionDecoder.hpp"
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <exception>
+#include <iomanip>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace {
 
-constexpr int kWindowWidth = 1180;
-constexpr int kWindowHeight = 760;
+constexpr int kWindowWidth = 1240;
+constexpr int kWindowHeight = 780;
 
 constexpr int kIdInputEdit = 1001;
-constexpr int kIdLoadButton = 1002;
-constexpr int kIdStepButton = 1003;
-constexpr int kIdRunButton = 1004;
-constexpr int kIdResetButton = 1005;
-constexpr int kIdStateEdit = 1006;
-constexpr int kIdTraceEdit = 1007;
+constexpr int kIdLoadAssemblyButton = 1002;
+constexpr int kIdLoadBinaryButton = 1003;
+constexpr int kIdStepButton = 1004;
+constexpr int kIdRunButton = 1005;
+constexpr int kIdResetButton = 1006;
+constexpr int kIdStateEdit = 1007;
+constexpr int kIdTraceEdit = 1008;
 
 constexpr std::size_t kDataViewStart = 96;
 constexpr std::size_t kDataViewCount = 16;
@@ -28,8 +37,18 @@ constexpr std::size_t kDataViewCount = 16;
 constexpr std::size_t kStackViewStart = 2048;
 constexpr std::size_t kStackViewCount = 32;
 
+constexpr std::size_t kBinaryMemoryPreviewStart = 0;
+constexpr std::size_t kBinaryMemoryPreviewCount = 96;
+
+enum class StudioMode {
+    None,
+    Assembly,
+    Binary
+};
+
 HWND g_inputEdit = nullptr;
-HWND g_loadButton = nullptr;
+HWND g_loadAssemblyButton = nullptr;
+HWND g_loadBinaryButton = nullptr;
 HWND g_stepButton = nullptr;
 HWND g_runButton = nullptr;
 HWND g_resetButton = nullptr;
@@ -37,6 +56,7 @@ HWND g_stateEdit = nullptr;
 HWND g_traceEdit = nullptr;
 
 zero_cpu::CPU g_cpu;
+StudioMode g_mode = StudioMode::None;
 bool g_programLoaded = false;
 std::string g_loadedPath;
 
@@ -98,6 +118,75 @@ void appendTraceText(const std::string& text) {
     );
 }
 
+std::string modeToString(StudioMode mode) {
+    switch (mode) {
+    case StudioMode::Assembly:
+        return "Assembly";
+    case StudioMode::Binary:
+        return "Binary";
+    case StudioMode::None:
+    default:
+        return "None";
+    }
+}
+
+bool endsWithZbin(const std::string& path) {
+    if (path.size() < 5) {
+        return false;
+    }
+
+    const std::string suffix = path.substr(path.size() - 5);
+
+    return suffix == ".zbin" ||
+           suffix == ".ZBIN";
+}
+
+std::string decodedInstructionToString(
+    const zero_cpu::DecodedInstruction& instruction
+) {
+    std::ostringstream oss;
+
+    oss << "opcode=0x"
+        << std::hex
+        << std::setw(2)
+        << std::setfill('0')
+        << static_cast<int>(zero_cpu::encodeOpcode(instruction.opcode))
+        << std::dec
+        << std::setfill(' ');
+
+    oss << " | dst_type="
+        << zero_cpu::toString(instruction.dst_type)
+        << " | dst_payload="
+        << instruction.dst_payload;
+
+    oss << " | src_type="
+        << zero_cpu::toString(instruction.src_type)
+        << " | src_payload="
+        << instruction.src_payload;
+
+    return oss.str();
+}
+
+std::string currentBinaryInstructionText() {
+    using namespace zero_cpu;
+    using namespace zero_cpu::binary;
+
+    try {
+        const std::size_t pc = g_cpu.state().pc();
+
+        const std::vector<std::uint8_t> instructionBytes =
+            g_cpu.state().memory().readBytes(pc, kInstructionSize);
+
+        InstructionDecoder decoder;
+        const DecodedInstruction decoded =
+            decoder.decodeInstruction(instructionBytes);
+
+        return decodedInstructionToString(decoded);
+    } catch (const std::exception& ex) {
+        return std::string("<decode failed: ") + ex.what() + ">";
+    }
+}
+
 std::string makeRegisterView() {
     using namespace zero_cpu;
 
@@ -122,6 +211,7 @@ std::string makeMemoryView() {
     std::ostringstream oss;
 
     oss << "Memory View\n";
+
     oss << "Memory[96..111] = "
         << g_cpu.state().memory().dumpRange(
                kDataViewStart,
@@ -144,14 +234,53 @@ std::string makeMemoryView() {
         << g_cpu.state().memory().read(2048)
         << "\n";
 
+    if (g_mode == StudioMode::Binary) {
+        oss << "\n";
+        oss << "Binary Code Memory Preview\n";
+        oss << "Memory[0..95] = "
+            << g_cpu.state().memory().dumpRange(
+                   kBinaryMemoryPreviewStart,
+                   kBinaryMemoryPreviewCount
+               )
+            << "\n";
+    }
+
+    return oss.str();
+}
+
+std::string makeBinaryInfoView() {
+    std::ostringstream oss;
+
+    if (g_mode != StudioMode::Binary) {
+        return {};
+    }
+
+    oss << "Binary Program Info\n";
+    oss << "Has Binary Program = "
+        << (g_cpu.hasBinaryProgram() ? "true" : "false")
+        << "\n";
+    oss << "Code Base = "
+        << g_cpu.binaryCodeBase()
+        << "\n";
+    oss << "Entry Point = "
+        << g_cpu.binaryEntryPoint()
+        << "\n";
+    oss << "Code Size = "
+        << g_cpu.binaryCodeSize()
+        << " bytes\n";
+
+    oss << "Current Decoded Instruction = "
+        << currentBinaryInstructionText()
+        << "\n";
+
     return oss.str();
 }
 
 std::string makeStateView() {
     std::ostringstream oss;
 
-    oss << "Zero-CPU Studio v0.2\n";
-    oss << "Mode: Assembly Step Debugger\n";
+    oss << "Zero-CPU Studio v0.3\n";
+    oss << "Mode: " << modeToString(g_mode) << "\n";
 
     if (g_programLoaded) {
         oss << "Loaded: " << g_loadedPath << "\n";
@@ -178,6 +307,11 @@ std::string makeStateView() {
         << g_cpu.state().flags().toString()
         << "\n";
 
+    if (g_mode == StudioMode::Binary) {
+        oss << "\n";
+        oss << makeBinaryInfoView();
+    }
+
     oss << "\n";
     oss << makeRegisterView();
 
@@ -194,11 +328,11 @@ void refreshStateView() {
 void refreshTraceView() {
     std::ostringstream oss;
 
-    oss << "Trace Log\n";
-    oss << "---------\n";
+    oss << "Trace / Execution Log\n";
+    oss << "---------------------\n";
 
     if (g_cpu.traceLogger().empty()) {
-        oss << "(empty)\n";
+        oss << "(CPU TraceLogger empty)\n";
     } else {
         oss << g_cpu.traceLogger().compactString();
     }
@@ -214,6 +348,7 @@ bool loadAssemblyProgram(const std::string& inputPath) {
         AssembledProgram assembled = assembler.assembleFile(inputPath);
 
         g_cpu.loadProgram(assembled.instructions, assembled.labels);
+        g_mode = StudioMode::Assembly;
         g_programLoaded = true;
         g_loadedPath = inputPath;
 
@@ -225,20 +360,20 @@ bool loadAssemblyProgram(const std::string& inputPath) {
             << "\n";
         oss << "Label count: "
             << assembled.labels.size()
-            << "\n\n";
+            << "\n";
 
-        appendTraceText(oss.str());
-
+        setEditText(g_traceEdit, oss.str());
         refreshStateView();
-        refreshTraceView();
 
         return true;
     } catch (const std::exception& ex) {
+        g_cpu.reset();
+        g_mode = StudioMode::None;
         g_programLoaded = false;
         g_loadedPath.clear();
 
         std::ostringstream oss;
-        oss << "Load failed.\n";
+        oss << "Assembly load failed.\n";
         oss << "Error: " << ex.what() << "\n";
 
         setEditText(g_traceEdit, oss.str());
@@ -248,7 +383,76 @@ bool loadAssemblyProgram(const std::string& inputPath) {
     }
 }
 
-void onLoadClicked() {
+bool loadBinaryProgram(const std::string& inputPath) {
+    using namespace zero_cpu;
+    using namespace zero_cpu::binary;
+
+    try {
+        BinaryReader reader;
+        BinaryProgram program = reader.readFile(inputPath);
+
+        g_cpu.loadBinaryProgram(program);
+        g_mode = StudioMode::Binary;
+        g_programLoaded = true;
+        g_loadedPath = inputPath;
+
+        std::ostringstream oss;
+        oss << "Loaded binary program.\n";
+        oss << "Path: " << inputPath << "\n";
+        oss << "Version: "
+            << static_cast<int>(program.header.major_version)
+            << "."
+            << static_cast<int>(program.header.minor_version)
+            << "\n";
+        oss << "Entry Point: "
+            << program.header.entry_point
+            << "\n";
+        oss << "Code Size: "
+            << program.header.code_size
+            << " bytes\n";
+        oss << "Instruction Count: "
+            << program.code.size() / kInstructionSize
+            << "\n";
+        oss << "\n";
+        oss << "Note: current binary execution supports only NOP and HALT.\n";
+
+        setEditText(g_traceEdit, oss.str());
+        refreshStateView();
+
+        return true;
+    } catch (const std::exception& ex) {
+        g_cpu.reset();
+        g_mode = StudioMode::None;
+        g_programLoaded = false;
+        g_loadedPath.clear();
+
+        std::ostringstream oss;
+        oss << "Binary load failed.\n";
+        oss << "Error: " << ex.what() << "\n";
+
+        setEditText(g_traceEdit, oss.str());
+        refreshStateView();
+
+        return false;
+    }
+}
+
+bool autoLoadFromInputPath() {
+    const std::string inputPath = getWindowTextString(g_inputEdit);
+
+    if (inputPath.empty()) {
+        setEditText(g_traceEdit, "Input path is empty.\n");
+        return false;
+    }
+
+    if (endsWithZbin(inputPath)) {
+        return loadBinaryProgram(inputPath);
+    }
+
+    return loadAssemblyProgram(inputPath);
+}
+
+void onLoadAssemblyClicked() {
     const std::string inputPath = getWindowTextString(g_inputEdit);
 
     if (inputPath.empty()) {
@@ -259,16 +463,20 @@ void onLoadClicked() {
     loadAssemblyProgram(inputPath);
 }
 
+void onLoadBinaryClicked() {
+    const std::string inputPath = getWindowTextString(g_inputEdit);
+
+    if (inputPath.empty()) {
+        setEditText(g_traceEdit, "Input path is empty.\n");
+        return;
+    }
+
+    loadBinaryProgram(inputPath);
+}
+
 void onStepClicked() {
     if (!g_programLoaded) {
-        const std::string inputPath = getWindowTextString(g_inputEdit);
-
-        if (inputPath.empty()) {
-            setEditText(g_traceEdit, "Input path is empty.\n");
-            return;
-        }
-
-        if (!loadAssemblyProgram(inputPath)) {
+        if (!autoLoadFromInputPath()) {
             return;
         }
     }
@@ -276,7 +484,6 @@ void onStepClicked() {
     if (g_cpu.state().halted()) {
         appendTraceText("\nProgram is already halted.\n");
         refreshStateView();
-        refreshTraceView();
         return;
     }
 
@@ -284,14 +491,23 @@ void onStepClicked() {
 
     std::ostringstream stepLog;
     stepLog << "\n[Studio Step]\n";
+    stepLog << "Mode = " << modeToString(g_mode) << "\n";
     stepLog << "PC before = " << pcBefore << "\n";
 
-    if (pcBefore < g_cpu.program().size()) {
+    if (g_mode == StudioMode::Assembly) {
+        if (pcBefore < g_cpu.program().size()) {
+            stepLog << "Instruction = "
+                    << g_cpu.program()[pcBefore].toString()
+                    << "\n";
+        } else {
+            stepLog << "Instruction = <PC out of range>\n";
+        }
+    } else if (g_mode == StudioMode::Binary) {
         stepLog << "Instruction = "
-                << g_cpu.program()[pcBefore].toString()
+                << currentBinaryInstructionText()
                 << "\n";
     } else {
-        stepLog << "Instruction = <PC out of range>\n";
+        stepLog << "Instruction = <none>\n";
     }
 
     g_cpu.step();
@@ -307,27 +523,19 @@ void onStepClicked() {
     }
 
     appendTraceText(stepLog.str());
-
     refreshStateView();
-    refreshTraceView();
 }
 
 void onRunClicked() {
     if (!g_programLoaded) {
-        const std::string inputPath = getWindowTextString(g_inputEdit);
-
-        if (inputPath.empty()) {
-            setEditText(g_traceEdit, "Input path is empty.\n");
-            return;
-        }
-
-        if (!loadAssemblyProgram(inputPath)) {
+        if (!autoLoadFromInputPath()) {
             return;
         }
     }
 
     std::ostringstream runLog;
     runLog << "\n[Studio Run]\n";
+    runLog << "Mode = " << modeToString(g_mode) << "\n";
 
     std::size_t stepCount = 0;
 
@@ -337,11 +545,18 @@ void onRunClicked() {
         runLog << "Step " << stepCount
                << " | PC=" << pcBefore;
 
-        if (pcBefore < g_cpu.program().size()) {
+        if (g_mode == StudioMode::Assembly) {
+            if (pcBefore < g_cpu.program().size()) {
+                runLog << " | "
+                       << g_cpu.program()[pcBefore].toString();
+            } else {
+                runLog << " | <PC out of range>";
+            }
+        } else if (g_mode == StudioMode::Binary) {
             runLog << " | "
-                   << g_cpu.program()[pcBefore].toString();
+                   << currentBinaryInstructionText();
         } else {
-            runLog << " | <PC out of range>";
+            runLog << " | <none>";
         }
 
         runLog << "\n";
@@ -368,13 +583,12 @@ void onRunClicked() {
     }
 
     appendTraceText(runLog.str());
-
     refreshStateView();
-    refreshTraceView();
 }
 
 void onResetClicked() {
     g_cpu.reset();
+    g_mode = StudioMode::None;
     g_programLoaded = false;
     g_loadedPath.clear();
 
@@ -382,11 +596,16 @@ void onResetClicked() {
 
     setEditText(
         g_traceEdit,
-        "Zero-CPU Studio v0.2\n"
+        "Zero-CPU Studio v0.3\n"
         "\n"
         "Ready.\n"
-        "1. Click [Load Assembly]\n"
-        "2. Click [Step] or [Run]\n"
+        "Assembly:\n"
+        "  examples\\function_call.zasm\n"
+        "\n"
+        "Binary NOP/HALT test:\n"
+        "  examples\\nop_halt.zbin\n"
+        "\n"
+        "Use [Load Assembly] or [Load Binary], then [Step] or [Run].\n"
     );
 
     refreshStateView();
@@ -435,11 +654,11 @@ LRESULT CALLBACK windowProc(
         CreateWindowExA(
             0,
             "STATIC",
-            "Assembly file path:",
+            "Input file path (.zasm or .zbin):",
             WS_CHILD | WS_VISIBLE,
             20,
             20,
-            200,
+            320,
             28,
             hwnd,
             nullptr,
@@ -454,7 +673,7 @@ LRESULT CALLBACK windowProc(
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
             20,
             50,
-            560,
+            520,
             32,
             hwnd,
             reinterpret_cast<HMENU>(kIdInputEdit),
@@ -462,17 +681,32 @@ LRESULT CALLBACK windowProc(
             nullptr
         );
 
-        g_loadButton = CreateWindowExA(
+        g_loadAssemblyButton = CreateWindowExA(
             0,
             "BUTTON",
             "Load Assembly",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            600,
+            560,
             50,
             130,
             32,
             hwnd,
-            reinterpret_cast<HMENU>(kIdLoadButton),
+            reinterpret_cast<HMENU>(kIdLoadAssemblyButton),
+            nullptr,
+            nullptr
+        );
+
+        g_loadBinaryButton = CreateWindowExA(
+            0,
+            "BUTTON",
+            "Load Binary",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            700,
+            50,
+            120,
+            32,
+            hwnd,
+            reinterpret_cast<HMENU>(kIdLoadBinaryButton),
             nullptr,
             nullptr
         );
@@ -482,9 +716,9 @@ LRESULT CALLBACK windowProc(
             "BUTTON",
             "Step",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            740,
+            830,
             50,
-            90,
+            80,
             32,
             hwnd,
             reinterpret_cast<HMENU>(kIdStepButton),
@@ -497,9 +731,9 @@ LRESULT CALLBACK windowProc(
             "BUTTON",
             "Run",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            840,
+            920,
             50,
-            90,
+            80,
             32,
             hwnd,
             reinterpret_cast<HMENU>(kIdRunButton),
@@ -512,9 +746,9 @@ LRESULT CALLBACK windowProc(
             "BUTTON",
             "Reset",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            940,
+            1010,
             50,
-            90,
+            80,
             32,
             hwnd,
             reinterpret_cast<HMENU>(kIdResetButton),
@@ -529,7 +763,7 @@ LRESULT CALLBACK windowProc(
             WS_CHILD | WS_VISIBLE,
             20,
             100,
-            300,
+            320,
             28,
             hwnd,
             nullptr,
@@ -552,8 +786,8 @@ LRESULT CALLBACK windowProc(
                 ES_READONLY,
             20,
             130,
-            540,
-            560,
+            580,
+            580,
             hwnd,
             reinterpret_cast<HMENU>(kIdStateEdit),
             nullptr,
@@ -565,9 +799,9 @@ LRESULT CALLBACK windowProc(
             "STATIC",
             "Trace / Execution Log:",
             WS_CHILD | WS_VISIBLE,
-            590,
+            630,
             100,
-            300,
+            320,
             28,
             hwnd,
             nullptr,
@@ -588,10 +822,10 @@ LRESULT CALLBACK windowProc(
                 ES_AUTOVSCROLL |
                 ES_AUTOHSCROLL |
                 ES_READONLY,
-            590,
+            630,
             130,
-            540,
             560,
+            580,
             hwnd,
             reinterpret_cast<HMENU>(kIdTraceEdit),
             nullptr,
@@ -599,7 +833,8 @@ LRESULT CALLBACK windowProc(
         );
 
         applyFont(g_inputEdit, font);
-        applyFont(g_loadButton, font);
+        applyFont(g_loadAssemblyButton, font);
+        applyFont(g_loadBinaryButton, font);
         applyFont(g_stepButton, font);
         applyFont(g_runButton, font);
         applyFont(g_resetButton, font);
@@ -614,8 +849,13 @@ LRESULT CALLBACK windowProc(
     case WM_COMMAND: {
         const int controlId = LOWORD(wParam);
 
-        if (controlId == kIdLoadButton) {
-            onLoadClicked();
+        if (controlId == kIdLoadAssemblyButton) {
+            onLoadAssemblyClicked();
+            return 0;
+        }
+
+        if (controlId == kIdLoadBinaryButton) {
+            onLoadBinaryClicked();
             return 0;
         }
 
