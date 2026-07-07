@@ -14,27 +14,32 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace {
 
-constexpr int kWindowWidth = 1320;
-constexpr int kWindowHeight = 820;
+constexpr int kWindowWidth = 1500;
+constexpr int kWindowHeight = 920;
 
 constexpr int kIdInputEdit = 1001;
 constexpr int kIdOutputEdit = 1002;
-constexpr int kIdAssembleButton = 1003;
-constexpr int kIdLoadAssemblyButton = 1004;
-constexpr int kIdLoadBinaryButton = 1005;
-constexpr int kIdStepButton = 1006;
-constexpr int kIdRunButton = 1007;
-constexpr int kIdResetButton = 1008;
-constexpr int kIdStateEdit = 1009;
-constexpr int kIdTraceEdit = 1010;
+constexpr int kIdLoadSourceButton = 1003;
+constexpr int kIdSaveSourceButton = 1004;
+constexpr int kIdAssembleButton = 1005;
+constexpr int kIdLoadAssemblyButton = 1006;
+constexpr int kIdLoadBinaryButton = 1007;
+constexpr int kIdStepButton = 1008;
+constexpr int kIdRunButton = 1009;
+constexpr int kIdResetButton = 1010;
+constexpr int kIdSourceEdit = 1011;
+constexpr int kIdStateEdit = 1012;
+constexpr int kIdTraceEdit = 1013;
 
 constexpr std::size_t kDataViewStart = 96;
 constexpr std::size_t kDataViewCount = 16;
@@ -45,6 +50,9 @@ constexpr std::size_t kStackViewCount = 32;
 constexpr std::size_t kBinaryMemoryPreviewStart = 512;
 constexpr std::size_t kBinaryMemoryPreviewCount = 96;
 
+constexpr const char* kDefaultSourcePath = "examples\\function_call.zasm";
+constexpr const char* kDefaultBinaryPath = "examples\\function_call.zbin";
+
 enum class StudioMode {
     None,
     Assembly,
@@ -53,12 +61,15 @@ enum class StudioMode {
 
 HWND g_inputEdit = nullptr;
 HWND g_outputEdit = nullptr;
+HWND g_loadSourceButton = nullptr;
+HWND g_saveSourceButton = nullptr;
 HWND g_assembleButton = nullptr;
 HWND g_loadAssemblyButton = nullptr;
 HWND g_loadBinaryButton = nullptr;
 HWND g_stepButton = nullptr;
 HWND g_runButton = nullptr;
 HWND g_resetButton = nullptr;
+HWND g_sourceEdit = nullptr;
 HWND g_stateEdit = nullptr;
 HWND g_traceEdit = nullptr;
 
@@ -89,6 +100,28 @@ std::string normalizeNewlines(const std::string& text) {
             }
         } else if (ch == '\n') {
             result += "\r\n";
+        } else {
+            result += ch;
+        }
+    }
+
+    return result;
+}
+
+std::string normalizeForFile(const std::string& text) {
+    std::string result;
+    result.reserve(text.size());
+
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const char ch = text[i];
+
+        if (ch == '\r') {
+            if (i + 1 < text.size() && text[i + 1] == '\n') {
+                result += '\n';
+                ++i;
+            } else {
+                result += '\n';
+            }
         } else {
             result += ch;
         }
@@ -129,6 +162,28 @@ void appendTraceText(const std::string& text) {
     );
 }
 
+std::string readTextFile(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
+
+    if (!file) {
+        throw std::runtime_error("Failed to open source file: " + path);
+    }
+
+    std::ostringstream oss;
+    oss << file.rdbuf();
+    return oss.str();
+}
+
+void writeTextFile(const std::string& path, const std::string& text) {
+    std::ofstream file(path, std::ios::binary);
+
+    if (!file) {
+        throw std::runtime_error("Failed to write source file: " + path);
+    }
+
+    file << normalizeForFile(text);
+}
+
 std::string modeToString(StudioMode mode) {
     switch (mode) {
     case StudioMode::Assembly:
@@ -147,9 +202,7 @@ bool endsWithZbin(const std::string& path) {
     }
 
     const std::string suffix = path.substr(path.size() - 5);
-
-    return suffix == ".zbin" ||
-           suffix == ".ZBIN";
+    return suffix == ".zbin" || suffix == ".ZBIN";
 }
 
 std::string makeFinalCheckView() {
@@ -313,7 +366,7 @@ std::string makeBinaryInfoView() {
 std::string makeStateView() {
     std::ostringstream oss;
 
-    oss << "Zero-CPU Studio v0.4\n";
+    oss << "Zero-CPU Studio v0.5\n";
     oss << "Mode: " << modeToString(g_mode) << "\n";
 
     if (g_programLoaded) {
@@ -360,6 +413,50 @@ std::string makeStateView() {
 
 void refreshStateView() {
     setEditText(g_stateEdit, makeStateView());
+}
+
+bool saveSourceEditorToFile(const std::string& inputPath) {
+    try {
+        writeTextFile(inputPath, getWindowTextString(g_sourceEdit));
+
+        std::ostringstream oss;
+        oss << "Saved source file.\n";
+        oss << "Path: " << inputPath << "\n";
+
+        setEditText(g_traceEdit, oss.str());
+        return true;
+    } catch (const std::exception& ex) {
+        std::ostringstream oss;
+        oss << "Save source failed.\n";
+        oss << "Path: " << inputPath << "\n";
+        oss << "Error: " << ex.what() << "\n";
+
+        setEditText(g_traceEdit, oss.str());
+        return false;
+    }
+}
+
+bool loadSourceFileToEditor(const std::string& inputPath) {
+    try {
+        const std::string source = readTextFile(inputPath);
+        setEditText(g_sourceEdit, source);
+
+        std::ostringstream oss;
+        oss << "Loaded source into editor.\n";
+        oss << "Path: " << inputPath << "\n";
+        oss << "Size: " << source.size() << " bytes\n";
+
+        setEditText(g_traceEdit, oss.str());
+        return true;
+    } catch (const std::exception& ex) {
+        std::ostringstream oss;
+        oss << "Load source failed.\n";
+        oss << "Path: " << inputPath << "\n";
+        oss << "Error: " << ex.what() << "\n";
+
+        setEditText(g_traceEdit, oss.str());
+        return false;
+    }
 }
 
 bool assembleSourceToBinary(
@@ -535,6 +632,28 @@ bool autoLoadFromInputPath() {
     return loadAssemblyProgram(inputPath);
 }
 
+void onLoadSourceClicked() {
+    const std::string inputPath = getWindowTextString(g_inputEdit);
+
+    if (inputPath.empty()) {
+        setEditText(g_traceEdit, "Input path is empty.\n");
+        return;
+    }
+
+    loadSourceFileToEditor(inputPath);
+}
+
+void onSaveSourceClicked() {
+    const std::string inputPath = getWindowTextString(g_inputEdit);
+
+    if (inputPath.empty()) {
+        setEditText(g_traceEdit, "Input path is empty.\n");
+        return;
+    }
+
+    saveSourceEditorToFile(inputPath);
+}
+
 void onAssembleClicked() {
     const std::string inputPath = getWindowTextString(g_inputEdit);
     const std::string outputPath = getWindowTextString(g_outputEdit);
@@ -547,6 +666,12 @@ void onAssembleClicked() {
     if (outputPath.empty()) {
         setEditText(g_traceEdit, "Output .zbin path is empty.\n");
         return;
+    }
+
+    if (GetWindowTextLengthA(g_sourceEdit) > 0) {
+        if (!saveSourceEditorToFile(inputPath)) {
+            return;
+        }
     }
 
     assembleSourceToBinary(inputPath, outputPath);
@@ -623,6 +748,11 @@ void onStepClicked() {
                 << "\n";
     }
 
+    if (g_cpu.state().halted()) {
+        stepLog << "\n";
+        stepLog << makeFinalCheckView();
+    }
+
     appendTraceText(stepLog.str());
     refreshStateView();
 }
@@ -696,25 +826,28 @@ void onResetClicked() {
     g_programLoaded = false;
     g_loadedPath.clear();
 
-    SetWindowTextA(g_inputEdit, "examples\\function_call.zasm");
-    SetWindowTextA(g_outputEdit, "examples\\function_call.zbin");
+    SetWindowTextA(g_inputEdit, kDefaultSourcePath);
+    SetWindowTextA(g_outputEdit, kDefaultBinaryPath);
+
+    try {
+        setEditText(g_sourceEdit, readTextFile(kDefaultSourcePath));
+    } catch (...) {
+        setEditText(g_sourceEdit, "");
+    }
 
     setEditText(
         g_traceEdit,
-        "Zero-CPU Studio v0.4\n"
+        "Zero-CPU Studio v0.5\n"
         "\n"
         "Ready.\n"
-        "Assembly source:\n"
-        "  examples\\function_call.zasm\n"
-        "\n"
-        "Binary output/input:\n"
-        "  examples\\function_call.zbin\n"
-        "  examples\\nop_halt.zbin\n"
+        "Source editor added.\n"
         "\n"
         "Workflow:\n"
-        "  1. [Assemble] .zasm -> .zbin\n"
-        "  2. [Load Binary]\n"
-        "  3. [Step] or [Run]\n"
+        "  1. Edit .zasm in Source Editor\n"
+        "  2. [Save Source] or [Assemble] saves it\n"
+        "  3. [Assemble] .zasm -> .zbin\n"
+        "  4. [Load Binary]\n"
+        "  5. [Step] or [Run]\n"
     );
 
     refreshStateView();
@@ -763,12 +896,12 @@ LRESULT CALLBACK windowProc(
         CreateWindowExA(
             0,
             "STATIC",
-            "Input file path (.zasm or .zbin):",
+            "Input source/binary path:",
             WS_CHILD | WS_VISIBLE,
             20,
-            20,
-            320,
-            28,
+            14,
+            260,
+            24,
             hwnd,
             nullptr,
             nullptr,
@@ -778,12 +911,12 @@ LRESULT CALLBACK windowProc(
         g_inputEdit = CreateWindowExA(
             WS_EX_CLIENTEDGE,
             "EDIT",
-            "examples\\function_call.zasm",
+            kDefaultSourcePath,
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
             20,
-            50,
-            560,
-            32,
+            40,
+            500,
+            30,
             hwnd,
             controlId(kIdInputEdit),
             nullptr,
@@ -795,10 +928,10 @@ LRESULT CALLBACK windowProc(
             "STATIC",
             "Output .zbin path:",
             WS_CHILD | WS_VISIBLE,
-            20,
-            88,
-            320,
-            28,
+            540,
+            14,
+            220,
+            24,
             hwnd,
             nullptr,
             nullptr,
@@ -808,14 +941,44 @@ LRESULT CALLBACK windowProc(
         g_outputEdit = CreateWindowExA(
             WS_EX_CLIENTEDGE,
             "EDIT",
-            "examples\\function_call.zbin",
+            kDefaultBinaryPath,
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-            20,
-            116,
-            560,
-            32,
+            540,
+            40,
+            360,
+            30,
             hwnd,
             controlId(kIdOutputEdit),
+            nullptr,
+            nullptr
+        );
+
+        g_loadSourceButton = CreateWindowExA(
+            0,
+            "BUTTON",
+            "Load Source",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            920,
+            40,
+            115,
+            30,
+            hwnd,
+            controlId(kIdLoadSourceButton),
+            nullptr,
+            nullptr
+        );
+
+        g_saveSourceButton = CreateWindowExA(
+            0,
+            "BUTTON",
+            "Save Source",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            1045,
+            40,
+            115,
+            30,
+            hwnd,
+            controlId(kIdSaveSourceButton),
             nullptr,
             nullptr
         );
@@ -825,10 +988,10 @@ LRESULT CALLBACK windowProc(
             "BUTTON",
             "Assemble",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            600,
-            50,
-            110,
-            32,
+            1170,
+            40,
+            100,
+            30,
             hwnd,
             controlId(kIdAssembleButton),
             nullptr,
@@ -838,12 +1001,12 @@ LRESULT CALLBACK windowProc(
         g_loadAssemblyButton = CreateWindowExA(
             0,
             "BUTTON",
-            "Load Assembly",
+            "Load ASM",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            720,
-            50,
-            140,
-            32,
+            1280,
+            40,
+            90,
+            30,
             hwnd,
             controlId(kIdLoadAssemblyButton),
             nullptr,
@@ -853,12 +1016,12 @@ LRESULT CALLBACK windowProc(
         g_loadBinaryButton = CreateWindowExA(
             0,
             "BUTTON",
-            "Load Binary",
+            "Load BIN",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            870,
-            50,
-            120,
-            32,
+            20,
+            80,
+            100,
+            30,
             hwnd,
             controlId(kIdLoadBinaryButton),
             nullptr,
@@ -870,10 +1033,10 @@ LRESULT CALLBACK windowProc(
             "BUTTON",
             "Step",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            1000,
-            50,
+            130,
             80,
-            32,
+            80,
+            30,
             hwnd,
             controlId(kIdStepButton),
             nullptr,
@@ -885,10 +1048,10 @@ LRESULT CALLBACK windowProc(
             "BUTTON",
             "Run",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            1090,
-            50,
+            220,
             80,
-            32,
+            80,
+            30,
             hwnd,
             controlId(kIdRunButton),
             nullptr,
@@ -900,10 +1063,10 @@ LRESULT CALLBACK windowProc(
             "BUTTON",
             "Reset",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            1180,
-            50,
+            310,
             80,
-            32,
+            80,
+            30,
             hwnd,
             controlId(kIdResetButton),
             nullptr,
@@ -913,12 +1076,49 @@ LRESULT CALLBACK windowProc(
         CreateWindowExA(
             0,
             "STATIC",
-            "CPU / Register / Memory View:",
+            "Source Editor (.zasm):",
             WS_CHILD | WS_VISIBLE,
             20,
-            160,
+            120,
+            240,
+            24,
+            hwnd,
+            nullptr,
+            nullptr,
+            nullptr
+        );
+
+        g_sourceEdit = CreateWindowExA(
+            WS_EX_CLIENTEDGE,
+            "EDIT",
+            "",
+            WS_CHILD |
+                WS_VISIBLE |
+                WS_VSCROLL |
+                WS_HSCROLL |
+                ES_LEFT |
+                ES_MULTILINE |
+                ES_AUTOVSCROLL |
+                ES_AUTOHSCROLL,
+            20,
+            146,
+            450,
+            680,
+            hwnd,
+            controlId(kIdSourceEdit),
+            nullptr,
+            nullptr
+        );
+
+        CreateWindowExA(
+            0,
+            "STATIC",
+            "CPU / Register / Memory View:",
+            WS_CHILD | WS_VISIBLE,
+            490,
+            120,
             320,
-            28,
+            24,
             hwnd,
             nullptr,
             nullptr,
@@ -938,10 +1138,10 @@ LRESULT CALLBACK windowProc(
                 ES_AUTOVSCROLL |
                 ES_AUTOHSCROLL |
                 ES_READONLY,
-            20,
-            190,
-            620,
-            560,
+            490,
+            146,
+            460,
+            680,
             hwnd,
             controlId(kIdStateEdit),
             nullptr,
@@ -953,10 +1153,10 @@ LRESULT CALLBACK windowProc(
             "STATIC",
             "Trace / Execution Log:",
             WS_CHILD | WS_VISIBLE,
-            670,
-            160,
+            970,
+            120,
             320,
-            28,
+            24,
             hwnd,
             nullptr,
             nullptr,
@@ -976,10 +1176,10 @@ LRESULT CALLBACK windowProc(
                 ES_AUTOVSCROLL |
                 ES_AUTOHSCROLL |
                 ES_READONLY,
-            670,
-            190,
-            600,
-            560,
+            970,
+            146,
+            480,
+            680,
             hwnd,
             controlId(kIdTraceEdit),
             nullptr,
@@ -988,12 +1188,15 @@ LRESULT CALLBACK windowProc(
 
         applyFont(g_inputEdit, font);
         applyFont(g_outputEdit, font);
+        applyFont(g_loadSourceButton, font);
+        applyFont(g_saveSourceButton, font);
         applyFont(g_assembleButton, font);
         applyFont(g_loadAssemblyButton, font);
         applyFont(g_loadBinaryButton, font);
         applyFont(g_stepButton, font);
         applyFont(g_runButton, font);
         applyFont(g_resetButton, font);
+        applyFont(g_sourceEdit, font);
         applyFont(g_stateEdit, font);
         applyFont(g_traceEdit, font);
 
@@ -1004,6 +1207,16 @@ LRESULT CALLBACK windowProc(
 
     case WM_COMMAND: {
         const int controlIdValue = LOWORD(wParam);
+
+        if (controlIdValue == kIdLoadSourceButton) {
+            onLoadSourceClicked();
+            return 0;
+        }
+
+        if (controlIdValue == kIdSaveSourceButton) {
+            onSaveSourceClicked();
+            return 0;
+        }
 
         if (controlIdValue == kIdAssembleButton) {
             onAssembleClicked();
