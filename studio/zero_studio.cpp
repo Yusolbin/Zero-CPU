@@ -11,6 +11,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -40,6 +41,9 @@ constexpr int kIdResetButton = 1010;
 constexpr int kIdSourceEdit = 1011;
 constexpr int kIdStateEdit = 1012;
 constexpr int kIdTraceEdit = 1013;
+constexpr int kIdBreakpointEdit = 1014;
+constexpr int kIdAddBreakpointButton = 1015;
+constexpr int kIdClearBreakpointsButton = 1016;
 
 constexpr std::size_t kDataViewStart = 96;
 constexpr std::size_t kDataViewCount = 16;
@@ -72,11 +76,15 @@ HWND g_resetButton = nullptr;
 HWND g_sourceEdit = nullptr;
 HWND g_stateEdit = nullptr;
 HWND g_traceEdit = nullptr;
+HWND g_breakpointEdit = nullptr;
+HWND g_addBreakpointButton = nullptr;
+HWND g_clearBreakpointsButton = nullptr;
 
 zero_cpu::CPU g_cpu;
 StudioMode g_mode = StudioMode::None;
 bool g_programLoaded = false;
 std::string g_loadedPath;
+std::vector<std::size_t> g_breakpoints;
 
 HMENU controlId(int id) {
     return reinterpret_cast<HMENU>(static_cast<INT_PTR>(id));
@@ -196,6 +204,50 @@ std::string modeToString(StudioMode mode) {
     }
 }
 
+bool parseSizeT(const std::string& text, std::size_t& value) {
+    std::istringstream iss(text);
+    std::size_t parsed = 0;
+    iss >> parsed;
+    iss >> std::ws;
+
+    if (!iss || !iss.eof()) {
+        return false;
+    }
+
+    value = parsed;
+    return true;
+}
+
+bool hasBreakpoint(std::size_t pc) {
+    return std::find(
+        g_breakpoints.begin(),
+        g_breakpoints.end(),
+        pc
+    ) != g_breakpoints.end();
+}
+
+void addBreakpoint(std::size_t pc) {
+    if (!hasBreakpoint(pc)) {
+        g_breakpoints.push_back(pc);
+    }
+}
+
+std::string makeBreakpointView() {
+    std::ostringstream oss;
+
+    oss << "Breakpoints\n";
+
+    if (g_breakpoints.empty()) {
+        oss << "(none)\n";
+        return oss.str();
+    }
+
+    for (std::size_t i = 0; i < g_breakpoints.size(); ++i) {
+        oss << "[" << i << "] PC = " << g_breakpoints[i] << "\n";
+    }
+
+    return oss.str();
+}
 bool endsWithZbin(const std::string& path) {
     if (path.size() < 5) {
         return false;
@@ -366,7 +418,7 @@ std::string makeBinaryInfoView() {
 std::string makeStateView() {
     std::ostringstream oss;
 
-    oss << "Zero-CPU Studio v0.5\n";
+    oss << "Zero-CPU Studio v0.6\n";
     oss << "Mode: " << modeToString(g_mode) << "\n";
 
     if (g_programLoaded) {
@@ -374,6 +426,10 @@ std::string makeStateView() {
     } else {
         oss << "Loaded: false\n";
     }
+
+    oss << "\n";
+
+    oss << makeBreakpointView();
 
     oss << "\n";
 
@@ -773,6 +829,13 @@ void onRunClicked() {
     while (!g_cpu.state().halted()) {
         const std::size_t pcBefore = g_cpu.state().pc();
 
+        if (hasBreakpoint(pcBefore)) {
+            runLog << "Hit breakpoint at PC="
+                   << pcBefore
+                   << ". Execution paused before instruction.\n";
+            break;
+        }
+
         runLog << "Step " << stepCount
                << " | PC=" << pcBefore;
 
@@ -820,14 +883,57 @@ void onRunClicked() {
     refreshStateView();
 }
 
+void onAddBreakpointClicked() {
+    if (!g_programLoaded) {
+        if (!autoLoadFromInputPath()) {
+            return;
+        }
+    }
+
+    const std::string text = getWindowTextString(g_breakpointEdit);
+    std::size_t pc = g_cpu.state().pc();
+
+    if (!text.empty()) {
+        if (!parseSizeT(text, pc)) {
+            appendTraceText("\nInvalid breakpoint PC. Use a decimal address.\n");
+            refreshStateView();
+            return;
+        }
+    }
+
+    addBreakpoint(pc);
+
+    std::ostringstream oss;
+    oss << "\nAdded breakpoint at PC=" << pc << "\n";
+    appendTraceText(oss.str());
+
+    refreshStateView();
+}
+
+void onClearBreakpointsClicked() {
+    g_breakpoints.clear();
+
+    if (g_breakpointEdit != nullptr) {
+        SetWindowTextA(g_breakpointEdit, "");
+    }
+
+    appendTraceText("\nCleared all breakpoints.\n");
+    refreshStateView();
+}
+
 void onResetClicked() {
     g_cpu.reset();
     g_mode = StudioMode::None;
     g_programLoaded = false;
     g_loadedPath.clear();
+    g_breakpoints.clear();
 
     SetWindowTextA(g_inputEdit, kDefaultSourcePath);
     SetWindowTextA(g_outputEdit, kDefaultBinaryPath);
+
+    if (g_breakpointEdit != nullptr) {
+        SetWindowTextA(g_breakpointEdit, "");
+    }
 
     try {
         setEditText(g_sourceEdit, readTextFile(kDefaultSourcePath));
@@ -837,7 +943,7 @@ void onResetClicked() {
 
     setEditText(
         g_traceEdit,
-        "Zero-CPU Studio v0.5\n"
+        "Zero-CPU Studio v0.6\n"
         "\n"
         "Ready.\n"
         "Source editor added.\n"
@@ -848,6 +954,10 @@ void onResetClicked() {
         "  3. [Assemble] .zasm -> .zbin\n"
         "  4. [Load Binary]\n"
         "  5. [Step] or [Run]\n"
+        "\n"
+        "Breakpoints:\n"
+        "  - Type a PC and click [Add BP]\n"
+        "  - Empty BP field uses current PC\n"
     );
 
     refreshStateView();
@@ -1073,6 +1183,67 @@ LRESULT CALLBACK windowProc(
             nullptr
         );
 
+
+        CreateWindowExA(
+            0,
+            "STATIC",
+            "BP PC:",
+            WS_CHILD | WS_VISIBLE,
+            420,
+            84,
+            60,
+            24,
+            hwnd,
+            nullptr,
+            nullptr,
+            nullptr
+        );
+
+        g_breakpointEdit = CreateWindowExA(
+            WS_EX_CLIENTEDGE,
+            "EDIT",
+            "",
+            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+            480,
+            80,
+            100,
+            30,
+            hwnd,
+            controlId(kIdBreakpointEdit),
+            nullptr,
+            nullptr
+        );
+
+        g_addBreakpointButton = CreateWindowExA(
+            0,
+            "BUTTON",
+            "Add BP",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            590,
+            80,
+            90,
+            30,
+            hwnd,
+            controlId(kIdAddBreakpointButton),
+            nullptr,
+            nullptr
+        );
+
+        g_clearBreakpointsButton = CreateWindowExA(
+            0,
+            "BUTTON",
+            "Clear BP",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            690,
+            80,
+            95,
+            30,
+            hwnd,
+            controlId(kIdClearBreakpointsButton),
+            nullptr,
+            nullptr
+        );
+
         CreateWindowExA(
             0,
             "STATIC",
@@ -1196,6 +1367,9 @@ LRESULT CALLBACK windowProc(
         applyFont(g_stepButton, font);
         applyFont(g_runButton, font);
         applyFont(g_resetButton, font);
+        applyFont(g_breakpointEdit, font);
+        applyFont(g_addBreakpointButton, font);
+        applyFont(g_clearBreakpointsButton, font);
         applyFont(g_sourceEdit, font);
         applyFont(g_stateEdit, font);
         applyFont(g_traceEdit, font);
@@ -1245,6 +1419,16 @@ LRESULT CALLBACK windowProc(
 
         if (controlIdValue == kIdResetButton) {
             onResetClicked();
+            return 0;
+        }
+
+        if (controlIdValue == kIdAddBreakpointButton) {
+            onAddBreakpointClicked();
+            return 0;
+        }
+
+        if (controlIdValue == kIdClearBreakpointsButton) {
+            onClearBreakpointsClicked();
             return 0;
         }
 
