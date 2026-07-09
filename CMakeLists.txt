@@ -11,6 +11,7 @@ add_library(zero_cpu_core
     src/core/RegisterFile.cpp
     src/core/Memory.cpp
     src/core/CPUState.cpp
+    src/core/ALU.cpp
     src/core/CPU.cpp
 
     src/isa/Opcode.cpp
