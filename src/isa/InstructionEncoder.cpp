@@ -57,6 +57,10 @@ std::uint8_t encodeOpcode(Opcode opcode) {
         return 0x53;
     case Opcode::IRET:
         return 0x54;
+    case Opcode::EI:
+        return 0x70;
+    case Opcode::DI:
+        return 0x71;
 
     case Opcode::AND:
         return 0x60;

@@ -780,6 +780,28 @@ void CPU::executeBinaryInstruction(
         break;
     }
 
+    case Opcode::EI: {
+        requireNoBinaryOperands(instruction);
+
+        if (interrupt_controller_) {
+            interrupt_controller_->setGlobalEnabled(true);
+        }
+
+        advanceBinaryPcUnlessHalted();
+        break;
+    }
+
+    case Opcode::DI: {
+        requireNoBinaryOperands(instruction);
+
+        if (interrupt_controller_) {
+            interrupt_controller_->setGlobalEnabled(false);
+        }
+
+        advanceBinaryPcUnlessHalted();
+        break;
+    }
+
     case Opcode::AND: {
         requireTwoBinaryOperands(instruction);
         requireBinaryRegisterDestination(
@@ -1145,6 +1167,14 @@ void CPU::execute(const Instruction& instruction) {
         executeIret(instruction);
         break;
 
+    case Opcode::EI:
+        executeEi(instruction);
+        break;
+
+    case Opcode::DI:
+        executeDi(instruction);
+        break;
+
     case Opcode::AND:
         executeAnd(instruction);
         break;
@@ -1400,6 +1430,26 @@ void CPU::executeIret(const Instruction& instruction) {
             "Negative interrupt return address"
         )
     );
+}
+
+void CPU::executeEi(const Instruction& instruction) {
+    requireNoOperand(instruction);
+
+    if(interrupt_controller_) {
+        interrupt_controller_->setGlobalEnabled(true);
+    }
+
+    advancePcUnlessHalted();
+}
+
+void CPU::executeDi(const Instruction& instruction) {
+    requireNoOperand(instruction);
+
+    if (interrupt_controller_) {
+        interrupt_controller_->setGlobalEnabled(false);
+    }
+
+    advancePcUnlessHalted();
 }
 
 void CPU::executeAnd(const Instruction& instruction) {

@@ -34,6 +34,8 @@ enum class Opcode {
     CALL,
     RET,
     IRET,
+    EI,
+    DI,
 
     NOP,
     HALT,

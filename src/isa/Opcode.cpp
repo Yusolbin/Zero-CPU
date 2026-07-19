@@ -77,6 +77,10 @@ std::string opcodeToString(Opcode opcode) {
         return "RET";
     case Opcode::IRET:
         return "IRET";
+    case Opcode::EI:
+        return "EI";
+    case Opcode::DI:
+        return "DI";
 
     case Opcode::NOP:
         return "NOP";
@@ -121,6 +125,8 @@ Opcode opcodeFromString(const std::string& text) {
         {"CALL", Opcode::CALL},
         {"RET", Opcode::RET},
         {"IRET", Opcode::IRET},
+        {"EI", Opcode::EI},
+        {"DI", Opcode::DI},
 
         {"NOP", Opcode::NOP},
         {"HALT", Opcode::HALT}
