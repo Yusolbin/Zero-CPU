@@ -11,6 +11,7 @@
 #include "zero_cpu/core/MMIOBus.hpp"
 #include "zero_cpu/core/Memory.hpp"
 #include "zero_cpu/core/RegisterFile.hpp"
+#include "zero_cpu/core/TimerDevice.hpp"
 #include "zero_cpu/isa/EncodedInstruction.hpp"
 #include "zero_cpu/isa/Instruction.hpp"
 #include "zero_cpu/isa/InstructionDecoder.hpp"
@@ -1512,6 +1513,159 @@ int runCPUInterruptTest() {
     return 0;
 }
 
+
+int runTimerDeviceTest() {
+    using namespace zero_cpu;
+
+    std::cout << "=== Zero-CPU Timer Device Test ===\n\n";
+
+    bool passed = true;
+
+    auto expect = [&passed](const std::string& name, bool condition) {
+        std::cout << (condition ? "[PASS] " : "[FAIL] ")
+                  << name
+                  << "\n";
+
+        if (!condition) {
+            passed = false;
+        }
+    };
+
+    auto expectThrow = [&passed](const std::string& name, auto operation) {
+        try {
+            operation();
+        } catch (const std::exception& ex) {
+            std::cout << "[PASS] "
+                      << name
+                      << " | threw: "
+                      << ex.what()
+                      << "\n";
+            return;
+        }
+
+        std::cout << "[FAIL] "
+                  << name
+                  << " | expected exception, but no exception was thrown\n";
+        passed = false;
+    };
+
+    auto controller = std::make_shared<InterruptController>();
+    controller->setVectorHandler(32, 0x700);
+
+    TimerDevice timer(controller, 32, 3, 900);
+
+    expect("timer starts enabled", timer.enabled());
+    expect("initial tick count is zero", timer.tickCount() == 0);
+    expect("initial interrupt count is zero", timer.interruptCount() == 0);
+    expect("timer interval is 3", timer.interval() == 3);
+    expect("timer vector is 32", timer.vector() == 32);
+    expect("timer payload is 900", timer.payload() == 900);
+
+    timer.tick();
+    expect("tick 1 increments tick count", timer.tickCount() == 1);
+    expect("tick 1 does not request interrupt", !controller->hasPending());
+
+    timer.tick();
+    expect("tick 2 increments tick count", timer.tickCount() == 2);
+    expect("tick 2 does not request interrupt", !controller->hasPending());
+
+    timer.tick();
+    expect("tick 3 increments tick count", timer.tickCount() == 3);
+    expect("tick 3 requests interrupt", controller->hasPending());
+    expect("interrupt count is 1 after tick 3", timer.interruptCount() == 1);
+
+    InterruptRequest first = controller->acknowledge();
+    expect("timer interrupt vector is 32", first.vector == 32);
+    expect("timer interrupt payload is 900", first.payload == 900);
+    expect("timer interrupt source is timer", first.source == "timer");
+    expect("queue empty after acknowledge", controller->pendingCount() == 0);
+
+    timer.setEnabled(false);
+    timer.tick(3);
+    expect("disabled timer still counts ticks", timer.tickCount() == 6);
+    expect("disabled timer does not request interrupt", controller->pendingCount() == 0);
+    expect("disabled timer does not increment interrupt count", timer.interruptCount() == 1);
+
+    timer.write(TimerDevice::kEnabledOffset, 1);
+    timer.write(TimerDevice::kIntervalOffset, 2);
+    timer.write(TimerDevice::kPayloadOffset, 1234);
+
+    expect("MMIO read enabled register", timer.read(TimerDevice::kEnabledOffset) == 1);
+    expect("MMIO read interval register", timer.read(TimerDevice::kIntervalOffset) == 2);
+    expect("MMIO read payload register", timer.read(TimerDevice::kPayloadOffset) == 1234);
+
+    timer.tick();
+    expect("tick 7 does not trigger interval 2", controller->pendingCount() == 0);
+
+    timer.tick();
+    expect("tick 8 triggers interval 2", controller->hasPending());
+    expect("interrupt count is 2 after tick 8", timer.interruptCount() == 2);
+
+    InterruptRequest second = controller->acknowledge();
+    expect("second interrupt vector is still 32", second.vector == 32);
+    expect("second interrupt payload reflects MMIO write", second.payload == 1234);
+
+    timer.write(TimerDevice::kVectorOffset, 33);
+    controller->setVectorHandler(33, 0x800);
+    timer.write(TimerDevice::kTickCountOffset, 9);
+    timer.tick();
+
+    expect("tick 10 triggers new vector 33", controller->hasPending());
+
+    InterruptRequest third = controller->acknowledge();
+    expect("third interrupt vector is 33", third.vector == 33);
+    expect("third interrupt payload is 1234", third.payload == 1234);
+
+    expect("MMIO read tick count register", timer.read(TimerDevice::kTickCountOffset) == 10);
+    expect("MMIO read interrupt count register", timer.read(TimerDevice::kInterruptCountOffset) == 3);
+
+    timer.write(TimerDevice::kInterruptCountOffset, 0);
+    expect("MMIO reset interrupt count", timer.interruptCount() == 0);
+
+    expectThrow(
+        "TimerDevice rejects zero interval constructor",
+        [&controller]() {
+            TimerDevice invalid(controller, 32, 0, 0);
+        }
+    );
+
+    expectThrow(
+        "TimerDevice rejects zero interval write",
+        [&timer]() {
+            timer.write(TimerDevice::kIntervalOffset, 0);
+        }
+    );
+
+    expectThrow(
+        "TimerDevice rejects invalid vector write",
+        [&timer]() {
+            timer.write(TimerDevice::kVectorOffset, 999);
+        }
+    );
+
+    expectThrow(
+        "TimerDevice rejects unsupported read offset",
+        [&timer]() {
+            (void)timer.read(999);
+        }
+    );
+
+    expectThrow(
+        "TimerDevice rejects unsupported write offset",
+        [&timer]() {
+            timer.write(999, 1);
+        }
+    );
+
+    if (!passed) {
+        std::cout << "\nTimer device test failed.\n";
+        return 1;
+    }
+
+    std::cout << "\nTimer device test finished successfully.\n";
+    return 0;
+}
+
 void printUsage() {
     std::cout << "Zero-CPU CLI\n\n";
     std::cout << "Usage:\n";
@@ -1522,6 +1676,7 @@ void printUsage() {
     std::cout << "  zero_cli mmio-test\n";
     std::cout << "  zero_cli interrupt-test\n";
     std::cout << "  zero_cli cpu-interrupt-test\n";
+    std::cout << "  zero_cli timer-test\n";
     std::cout << "  zero_cli assemble <input.zasm> <output.zbin>\n";
     std::cout << "  zero_cli dump-binary <input.zbin>\n";
     std::cout << "  zero_cli load-binary <input.zbin>\n";
@@ -1589,6 +1744,18 @@ int main(int argc, char* argv[]) {
                 }
 
                 return runCPUInterruptTest();
+            }
+
+
+
+            if (command == "timer-test") {
+                if (argc != 2) {
+                    std::cerr << "Invalid timer-test command.\n\n";
+                    printUsage();
+                    return 1;
+                }
+
+                return runTimerDeviceTest();
             }
 
             if (command == "assemble") {

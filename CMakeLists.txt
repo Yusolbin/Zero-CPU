@@ -15,6 +15,7 @@ add_library(zero_cpu_core
     src/core/MMIOBus.cpp
     src/core/DebugOutputDevice.cpp
     src/core/InterruptController.cpp
+    src/core/TimerDevice.cpp
     src/core/CPU.cpp
 
     src/isa/Opcode.cpp

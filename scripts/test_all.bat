@@ -53,6 +53,11 @@ echo Running CPU interrupt delivery test...
 if errorlevel 1 goto fail
 
 echo.
+echo Running timer device test...
+"%ZERO_CLI%" timer-test
+if errorlevel 1 goto fail
+
+echo.
 echo [3/6] Running binary format round-trip test...
 "%ZERO_CLI%" binary-test
 if errorlevel 1 goto fail
