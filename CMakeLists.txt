@@ -12,6 +12,7 @@ add_library(zero_cpu_core
     src/core/Memory.cpp
     src/core/CPUState.cpp
     src/core/ALU.cpp
+    src/core/MMIOBus.cpp
     src/core/CPU.cpp
 
     src/isa/Opcode.cpp
