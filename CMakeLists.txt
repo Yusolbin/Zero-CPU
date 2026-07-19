@@ -13,6 +13,7 @@ add_library(zero_cpu_core
     src/core/CPUState.cpp
     src/core/ALU.cpp
     src/core/MMIOBus.cpp
+    src/core/DebugOutputDevice.cpp
     src/core/CPU.cpp
 
     src/isa/Opcode.cpp

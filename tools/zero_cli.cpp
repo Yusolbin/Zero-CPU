@@ -6,6 +6,8 @@
 #include "zero_cpu/binary/BinaryWriter.hpp"
 #include "zero_cpu/core/ALU.hpp"
 #include "zero_cpu/core/CPU.hpp"
+#include "zero_cpu/core/DebugOutputDevice.hpp"
+#include "zero_cpu/core/MMIOBus.hpp"
 #include "zero_cpu/core/Memory.hpp"
 #include "zero_cpu/core/RegisterFile.hpp"
 #include "zero_cpu/isa/EncodedInstruction.hpp"
@@ -20,6 +22,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -1120,6 +1123,106 @@ int runAssemblyProgram(const std::string& inputPath) {
     return 0;
 }
 
+
+int runMMIOTest() {
+    using namespace zero_cpu;
+
+    std::cout << "=== Zero-CPU MMIO Test ===\n\n";
+
+    bool passed = true;
+
+    MMIOBus bus;
+    auto outputDevice = std::make_shared<DebugOutputDevice>();
+
+    try {
+        bus.mapDevice(0xF000, 16, outputDevice);
+        std::cout << "[PASS] mapped DebugOutputDevice at 0xF000..0xF00F\n";
+    } catch (const std::exception& ex) {
+        std::cout << "[FAIL] failed to map DebugOutputDevice: "
+                  << ex.what()
+                  << "\n";
+        passed = false;
+    }
+
+    if (bus.hasDeviceAt(0xF000) && bus.hasDeviceAt(0xF008) && !bus.hasDeviceAt(0xEFFF)) {
+        std::cout << "[PASS] MMIO address lookup\n";
+    } else {
+        std::cout << "[FAIL] MMIO address lookup\n";
+        passed = false;
+    }
+
+    try {
+        bus.write(0xF000, 65);
+        bus.write(0xF000, 66);
+
+        const bool valuesOk =
+            outputDevice->writes().size() == 2 &&
+            outputDevice->writes()[0] == 65 &&
+            outputDevice->writes()[1] == 66;
+
+        if (valuesOk) {
+            std::cout << "[PASS] MMIO writes reached DebugOutputDevice\n";
+        } else {
+            std::cout << "[FAIL] MMIO writes reached wrong values\n";
+            passed = false;
+        }
+    } catch (const std::exception& ex) {
+        std::cout << "[FAIL] MMIO write failed: "
+                  << ex.what()
+                  << "\n";
+        passed = false;
+    }
+
+    try {
+        const std::int64_t lastValue = bus.read(0xF000);
+        const std::int64_t writeCount = bus.read(0xF008);
+
+        if (lastValue == 66 && writeCount == 2) {
+            std::cout << "[PASS] MMIO reads returned last value and write count\n";
+        } else {
+            std::cout << "[FAIL] MMIO read mismatch: last="
+                      << lastValue
+                      << " count="
+                      << writeCount
+                      << "\n";
+            passed = false;
+        }
+    } catch (const std::exception& ex) {
+        std::cout << "[FAIL] MMIO read failed: "
+                  << ex.what()
+                  << "\n";
+        passed = false;
+    }
+
+    try {
+        bus.read(0xE000);
+        std::cout << "[FAIL] unmapped MMIO read should have thrown\n";
+        passed = false;
+    } catch (const std::exception&) {
+        std::cout << "[PASS] unmapped MMIO read throws\n";
+    }
+
+    try {
+        auto overlappingDevice = std::make_shared<DebugOutputDevice>();
+        bus.mapDevice(0xF008, 16, overlappingDevice);
+        std::cout << "[FAIL] overlapping MMIO mapping should have thrown\n";
+        passed = false;
+    } catch (const std::exception&) {
+        std::cout << "[PASS] overlapping MMIO mapping throws\n";
+    }
+
+    std::cout << "\nDebugOutputDevice captured values:\n";
+    std::cout << outputDevice->outputText();
+
+    if (!passed) {
+        std::cout << "\nMMIO test failed.\n";
+        return 1;
+    }
+
+    std::cout << "\nMMIO test finished successfully.\n";
+    return 0;
+}
+
 void printUsage() {
     std::cout << "Zero-CPU CLI\n\n";
     std::cout << "Usage:\n";
@@ -1127,6 +1230,7 @@ void printUsage() {
     std::cout << "  zero_cli <input.zasm>\n";
     std::cout << "  zero_cli binary-test [output.zbin]\n";
     std::cout << "  zero_cli alu-test\n";
+    std::cout << "  zero_cli mmio-test\n";
     std::cout << "  zero_cli assemble <input.zasm> <output.zbin>\n";
     std::cout << "  zero_cli dump-binary <input.zbin>\n";
     std::cout << "  zero_cli load-binary <input.zbin>\n";
@@ -1163,6 +1267,16 @@ int main(int argc, char* argv[]) {
                 }
 
                 return runAluTest();
+            }
+
+            if (command == "mmio-test") {
+                if (argc != 2) {
+                    std::cerr << "Invalid mmio-test command.\n\n";
+                    printUsage();
+                    return 1;
+                }
+
+                return runMMIOTest();
             }
 
             if (command == "assemble") {

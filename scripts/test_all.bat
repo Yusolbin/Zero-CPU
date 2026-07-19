@@ -38,6 +38,11 @@ echo [2/6] Running ALU unit test...
 if errorlevel 1 goto fail
 
 echo.
+echo Running MMIO bus test...
+"%ZERO_CLI%" mmio-test
+if errorlevel 1 goto fail
+
+echo.
 echo [3/6] Running binary format round-trip test...
 "%ZERO_CLI%" binary-test
 if errorlevel 1 goto fail
