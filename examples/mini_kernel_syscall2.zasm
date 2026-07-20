@@ -1,0 +1,40 @@
+JMP main
+
+syscall_handler:
+    STORE [300], R0
+    STORE [308], R1
+    STORE [316], R2
+    STORE [324], R3
+
+    CMP R1, 1
+    JE syscall_debug_output
+
+    CMP R1, 2
+    JE syscall_memory_write
+
+    IRET
+
+syscall_debug_output:
+    STORE [61440], R2
+    STORE [332], R1
+    IRET
+
+syscall_memory_write:
+    STORE [500], R3
+    STORE [340], R1
+    IRET
+
+main:
+    MOV R1, 1
+    MOV R2, 74
+    INT 80
+
+    MOV R1, 2
+    MOV R2, 500
+    MOV R3, 999
+    INT 80
+
+    MOV R4, 333
+    STORE [348], R4
+
+    HALT
