@@ -2095,6 +2095,160 @@ int runSoftwareInterruptTest() {
     return 0;
 }
 
+
+int runMiniKernelSyscallTest() {
+    using namespace zero_cpu;
+    using namespace zero_cpu::binary;
+
+    std::cout << "=== Zero-CPU Mini Kernel Syscall Test ===\n\n";
+
+    const std::string sourcePath = "examples/mini_kernel_syscall.zasm";
+    const std::string binaryPath = "examples/mini_kernel_syscall.zbin";
+
+    Assembler assembler;
+    AssembledProgram assembled = assembler.assembleFile(sourcePath);
+
+    InstructionEncoder encoder;
+    std::vector<std::uint8_t> code = encoder.encodeProgram(
+        assembled.instructions,
+        assembled.labels
+    );
+
+    BinaryProgram program;
+    program.header.major_version = kMajorVersion;
+    program.header.minor_version = kMinorVersion;
+    program.header.endianness = BinaryEndianness::Little;
+    program.header.entry_point = 0;
+    program.header.code_size = static_cast<std::uint32_t>(code.size());
+    program.code = std::move(code);
+
+    BinaryWriter writer;
+    writer.writeFile(binaryPath, program);
+
+    CPU cpu;
+    auto controller = std::make_shared<InterruptController>();
+    auto bus = std::make_shared<MMIOBus>();
+    auto debugOutputDevice = std::make_shared<DebugOutputDevice>();
+
+    constexpr std::size_t kDebugOutputBase = 0xF000;
+    constexpr std::size_t kDebugOutputSize = 0x10;
+    constexpr std::uint8_t kSyscallVector = 80;
+
+    bus->mapDevice(kDebugOutputBase, kDebugOutputSize, debugOutputDevice);
+
+    cpu.setInterruptController(controller);
+    cpu.setMMIOBus(bus);
+    cpu.loadBinaryProgram(program);
+
+    const auto handlerIt = assembled.labels.find("syscall_handler");
+    if (handlerIt == assembled.labels.end()) {
+        std::cout << "[FAIL] syscall_handler label not found\n";
+        return 1;
+    }
+
+    const std::size_t handlerAddress =
+        cpu.binaryCodeBase() + handlerIt->second * kInstructionSize;
+
+    controller->setVectorHandler(kSyscallVector, handlerAddress);
+
+    std::cout << "Source: " << sourcePath << "\n";
+    std::cout << "Binary: " << binaryPath << "\n";
+    std::cout << "Syscall vector: "
+              << static_cast<int>(kSyscallVector)
+              << "\n";
+    std::cout << "Syscall convention:\n";
+    std::cout << "  R1 = syscall number\n";
+    std::cout << "  R2 = syscall argument 0\n";
+    std::cout << "Handler PC: " << handlerAddress << "\n";
+    std::cout << "Debug MMIO: 0xF000..0xF00F\n\n";
+
+    cpu.run();
+
+    std::cout << "=== Final CPU State ===\n";
+    std::cout << cpu.state().summary() << "\n";
+    printDebugOutputDevice(*debugOutputDevice);
+    std::cout << "\n";
+    std::cout << "Pending interrupts = " << controller->pendingCount() << "\n\n";
+
+    if (cpu.state().hasError()) {
+        std::cout << "Mini kernel syscall test failed: "
+                  << cpu.state().errorMessage()
+                  << "\n";
+        return 1;
+    }
+
+    bool passed = true;
+
+    auto expect = [&passed](
+        const std::string& name,
+        std::int64_t actual,
+        std::int64_t expected
+    ) {
+        if (actual == expected) {
+            std::cout << "[PASS] "
+                      << name
+                      << " = "
+                      << actual
+                      << "\n";
+            return;
+        }
+
+        std::cout << "[FAIL] "
+                  << name
+                  << " expected "
+                  << expected
+                  << " but got "
+                  << actual
+                  << "\n";
+        passed = false;
+    };
+
+    auto expectCondition = [&passed](
+        const std::string& name,
+        bool condition
+    ) {
+        std::cout << (condition ? "[PASS] " : "[FAIL] ")
+                  << name
+                  << "\n";
+
+        if (!condition) {
+            passed = false;
+        }
+    };
+
+    expect("Memory[440] syscall vector", cpu.state().memory().read(440), 80);
+    expect("Memory[448] syscall number", cpu.state().memory().read(448), 1);
+    expect("Memory[456] last syscall argument", cpu.state().memory().read(456), 73);
+    expect("Memory[464] syscall dispatch marker", cpu.state().memory().read(464), 1);
+    expect("Memory[472] main resumed marker", cpu.state().memory().read(472), 321);
+
+    expect("R0 after syscall", cpu.state().registers().get(RegisterName::R0), 80);
+    expect("R1 syscall number preserved", cpu.state().registers().get(RegisterName::R1), 1);
+    expect("R2 last syscall argument preserved", cpu.state().registers().get(RegisterName::R2), 73);
+    expect("R3 after mini kernel returns", cpu.state().registers().get(RegisterName::R3), 321);
+
+    expectCondition("DebugOutputDevice captured two writes", debugOutputDevice->writes().size() == 2);
+
+    if (debugOutputDevice->writes().size() >= 2) {
+        expect("DebugOutputDevice write[0]", debugOutputDevice->writes()[0], 72);
+        expect("DebugOutputDevice write[1]", debugOutputDevice->writes()[1], 73);
+    } else {
+        std::cout << "[FAIL] DebugOutputDevice writes missing\n";
+        passed = false;
+    }
+
+    expectCondition("interrupt queue is empty after mini kernel syscalls", controller->pendingCount() == 0);
+    expectCondition("CPU halted after mini kernel syscall program", cpu.state().halted());
+
+    if (!passed) {
+        std::cout << "\nMini kernel syscall test failed.\n";
+        return 1;
+    }
+
+    std::cout << "\nMini kernel syscall test finished successfully.\n";
+    return 0;
+}
+
 void printUsage() {
     std::cout << "Zero-CPU CLI\n\n";
     std::cout << "Usage:\n";
@@ -2109,6 +2263,7 @@ void printUsage() {
     std::cout << "  zero_cli cpu-timer-test\n";
     std::cout << "  zero_cli cpu-ei-di-test\n";
     std::cout << "  zero_cli software-interrupt-test\n";
+    std::cout << "  zero_cli mini-kernel-syscall-test\n";
     std::cout << "  zero_cli assemble <input.zasm> <output.zbin>\n";
     std::cout << "  zero_cli dump-binary <input.zbin>\n";
     std::cout << "  zero_cli load-binary <input.zbin>\n";
@@ -2219,6 +2374,16 @@ int main(int argc, char* argv[]) {
                 }
 
                 return runSoftwareInterruptTest();
+            }
+
+            if (command == "mini-kernel-syscall-test") {
+                if (argc != 2) {
+                    std::cerr << "Invalid mini-kernel-syscall-test command.\n\n";
+                    printUsage();
+                    return 1;
+                }
+
+                return runMiniKernelSyscallTest();
             }
 
             if (command == "assemble") {
