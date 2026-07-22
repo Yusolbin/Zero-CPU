@@ -38,3 +38,6 @@ Thumbs.db
 *.temp
 
 *.zbin
+*.zip
+register_indirect_full_files/
+zero_cpu_register_indirect_full_files/
