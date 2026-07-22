@@ -89,6 +89,8 @@ std::string toString(EncodedOperandType type) {
         return "Immediate";
     case EncodedOperandType::MemoryAddress:
         return "MemoryAddress";
+    case EncodedOperandType::RegisterIndirectAddress:
+        return "RegisterIndirectAddress";
     case EncodedOperandType::CodeAddress:
         return "CodeAddress";
     default:
@@ -159,6 +161,12 @@ InstructionEncoder::EncodedOperand InstructionEncoder::encodeOperand(
         return {
             static_cast<std::uint8_t>(EncodedOperandType::MemoryAddress),
             static_cast<std::int64_t>(operand.asMemoryAddress())
+        };
+
+    case OperandType::RegisterIndirectAddress:
+        return {
+            static_cast<std::uint8_t>(EncodedOperandType::RegisterIndirectAddress),
+            static_cast<std::int64_t>(encodeRegister(operand.asRegisterIndirectBase()))
         };
 
     case OperandType::Label: {

@@ -20,7 +20,7 @@ syscall_debug_output:
     IRET
 
 syscall_memory_write:
-    STORE [500], R3
+    STORE [R2], R3
     STORE [340], R1
     IRET
 

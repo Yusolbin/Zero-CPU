@@ -39,6 +39,13 @@ Operand Operand::memoryAddress(std::size_t address) {
     return operand;
 }
 
+Operand Operand::registerIndirectAddress(RegisterName reg) {
+    Operand operand;
+    operand.type_ = OperandType::RegisterIndirectAddress;
+    operand.reg_ = reg;
+    return operand;
+}
+
 Operand Operand::label(std::string name) {
     Operand operand;
     operand.type_ = OperandType::Label;
@@ -60,6 +67,10 @@ bool Operand::isImmediate() const {
 
 bool Operand::isMemoryAddress() const {
     return type_ == OperandType::MemoryAddress;
+}
+
+bool Operand::isRegisterIndirectAddress() const {
+    return type_ == OperandType::RegisterIndirectAddress;
 }
 
 bool Operand::isLabel() const {
@@ -85,6 +96,11 @@ std::size_t Operand::asMemoryAddress() const {
     return address_;
 }
 
+RegisterName Operand::asRegisterIndirectBase() const {
+    ensureType(OperandType::RegisterIndirectAddress);
+    return reg_;
+}
+
 const std::string& Operand::asLabel() const {
     ensureType(OperandType::Label);
     return label_;
@@ -104,6 +120,10 @@ std::string Operand::toString() const {
 
     case OperandType::MemoryAddress:
         oss << "[" << address_ << "]";
+        break;
+
+    case OperandType::RegisterIndirectAddress:
+        oss << "[" << RegisterFile::registerNameToString(reg_) << "]";
         break;
 
     case OperandType::Label:
@@ -137,6 +157,8 @@ std::string operandTypeToString(OperandType type) {
         return "Immediate";
     case OperandType::MemoryAddress:
         return "MemoryAddress";
+    case OperandType::RegisterIndirectAddress:
+        return "RegisterIndirectAddress";
     case OperandType::Label:
         return "Label";
     case OperandType::None:

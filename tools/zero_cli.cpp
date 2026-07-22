@@ -2589,6 +2589,121 @@ int runMiniKernelSyscall3Test() {
 }
 
 
+
+int runRegisterIndirectMemoryTest() {
+    using namespace zero_cpu;
+    using namespace zero_cpu::binary;
+
+    std::cout << "=== Zero-CPU Register-Indirect Memory Test ===\n\n";
+
+    const std::string sourcePath = "examples/register_indirect_memory.zasm";
+    const std::string binaryPath = "examples/register_indirect_memory.zbin";
+
+    Assembler assembler;
+    AssembledProgram assembled = assembler.assembleFile(sourcePath);
+
+    InstructionEncoder encoder;
+    std::vector<std::uint8_t> code = encoder.encodeProgram(
+        assembled.instructions,
+        assembled.labels
+    );
+
+    BinaryProgram program;
+    program.header.major_version = kMajorVersion;
+    program.header.minor_version = kMinorVersion;
+    program.header.endianness = BinaryEndianness::Little;
+    program.header.entry_point = 0;
+    program.header.code_size = static_cast<std::uint32_t>(code.size());
+    program.code = std::move(code);
+
+    BinaryWriter writer;
+    writer.writeFile(binaryPath, program);
+
+    CPU cpu;
+    cpu.loadBinaryProgram(program);
+    cpu.run();
+
+    std::cout << "Source: " << sourcePath << "\n";
+    std::cout << "Binary: " << binaryPath << "\n";
+    std::cout << "Syntax under test:\n";
+    std::cout << "  STORE [R1], R2\n";
+    std::cout << "  LOAD R3, [R1]\n";
+    std::cout << "  STORE [R4], R5\n";
+    std::cout << "  LOAD R6, [R4]\n\n";
+
+    std::cout << "=== Final CPU State ===\n";
+    std::cout << cpu.state().summary() << "\n\n";
+
+    if (cpu.state().hasError()) {
+        std::cout << "Register-indirect memory test failed: "
+                  << cpu.state().errorMessage()
+                  << "\n";
+        return 1;
+    }
+
+    bool passed = true;
+
+    auto expect = [&passed](
+        const std::string& name,
+        std::int64_t actual,
+        std::int64_t expected
+    ) {
+        if (actual == expected) {
+            std::cout << "[PASS] "
+                      << name
+                      << " = "
+                      << actual
+                      << "\n";
+            return;
+        }
+
+        std::cout << "[FAIL] "
+                  << name
+                  << " expected "
+                  << expected
+                  << " but got "
+                  << actual
+                  << "\n";
+        passed = false;
+    };
+
+    auto expectCondition = [&passed](
+        const std::string& name,
+        bool condition
+    ) {
+        std::cout << (condition ? "[PASS] " : "[FAIL] ")
+                  << name
+                  << "\n";
+
+        if (!condition) {
+            passed = false;
+        }
+    };
+
+    expect("Memory[300] written through [R1]", cpu.state().memory().read(300), 1234);
+    expect("Memory[308] loaded from [R1]", cpu.state().memory().read(308), 1234);
+    expect("Memory[500] written through [R4]", cpu.state().memory().read(500), 4321);
+    expect("Memory[316] loaded from [R4]", cpu.state().memory().read(316), 4321);
+
+    expect("R1 address register", cpu.state().registers().get(RegisterName::R1), 300);
+    expect("R2 stored value", cpu.state().registers().get(RegisterName::R2), 1234);
+    expect("R3 loaded value", cpu.state().registers().get(RegisterName::R3), 1234);
+    expect("R4 second address register", cpu.state().registers().get(RegisterName::R4), 500);
+    expect("R5 second stored value", cpu.state().registers().get(RegisterName::R5), 4321);
+    expect("R6 second loaded value", cpu.state().registers().get(RegisterName::R6), 4321);
+
+    expectCondition("CPU halted after register-indirect program", cpu.state().halted());
+
+    if (!passed) {
+        std::cout << "\nRegister-indirect memory test failed.\n";
+        return 1;
+    }
+
+    std::cout << "\nRegister-indirect memory test finished successfully.\n";
+    return 0;
+}
+
+
 void printUsage() {
     std::cout << "Zero-CPU CLI\n\n";
     std::cout << "Usage:\n";
@@ -2603,6 +2718,7 @@ void printUsage() {
     std::cout << "  zero_cli cpu-timer-test\n";
     std::cout << "  zero_cli cpu-ei-di-test\n";
     std::cout << "  zero_cli software-interrupt-test\n";
+    std::cout << "  zero_cli register-indirect-test\n";
     std::cout << "  zero_cli mini-kernel-syscall-test\n";
     std::cout << "  zero_cli mini-kernel-syscall2-test\n";
     std::cout << "  zero_cli mini-kernel-syscall3-test\n";
@@ -2706,6 +2822,17 @@ int main(int argc, char* argv[]) {
                 }
 
                 return runCPUEiDiTest();
+            }
+
+
+            if (command == "register-indirect-test") {
+                if (argc != 2) {
+                    std::cerr << "Invalid register-indirect-test command.\n\n";
+                    printUsage();
+                    return 1;
+                }
+
+                return runRegisterIndirectMemoryTest();
             }
 
             if (command == "software-interrupt-test") {

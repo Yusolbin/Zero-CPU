@@ -1010,6 +1010,7 @@ std::int64_t CPU::readBinaryOperandValue(
         return payload;
 
     case EncodedOperandType::MemoryAddress:
+    case EncodedOperandType::RegisterIndirectAddress:
         return readDataMemory(
             readBinaryMemoryAddress(type, payload)
         );
@@ -1033,16 +1034,29 @@ void CPU::writeBinaryRegisterDestination(
 std::size_t CPU::readBinaryMemoryAddress(
     EncodedOperandType type,
     std::int64_t payload
-) const {
-    if (type != EncodedOperandType::MemoryAddress) {
-        throw std::runtime_error("Binary operand must be memory address");
+) {
+    if (type == EncodedOperandType::MemoryAddress) {
+        if (payload < 0) {
+            throw std::runtime_error("Negative binary memory address");
+        }
+
+        return static_cast<std::size_t>(payload);
     }
 
-    if (payload < 0) {
-        throw std::runtime_error("Negative binary memory address");
+    if (type == EncodedOperandType::RegisterIndirectAddress) {
+        const RegisterName baseRegister = decodeBinaryRegister(payload);
+        const std::int64_t address = state_.registers().get(baseRegister);
+
+        if (address < 0) {
+            throw std::runtime_error(
+                "Negative binary register-indirect memory address"
+            );
+        }
+
+        return static_cast<std::size_t>(address);
     }
 
-    return static_cast<std::size_t>(payload);
+    throw std::runtime_error("Binary operand must be memory address");
 }
 
 std::size_t CPU::readBinaryCodeAddress(
@@ -1283,12 +1297,8 @@ void CPU::executeLoad(const Instruction& instruction) {
     requireTwoOperands(instruction);
     requireRegisterDestination(instruction.dst());
 
-    if (instruction.src().type() != OperandType::MemoryAddress) {
-        throw std::runtime_error("LOAD source must be memory address");
-    }
-
-    const std::int64_t value =
-        readDataMemory(instruction.src().asMemoryAddress());
+    const std::size_t address = readMemoryAddress(instruction.src());
+    const std::int64_t value = readDataMemory(address);
 
     writeRegisterDestination(instruction.dst(), value);
     state_.flags().updateZeroAndSign(value);
@@ -1299,12 +1309,9 @@ void CPU::executeLoad(const Instruction& instruction) {
 void CPU::executeStore(const Instruction& instruction) {
     requireTwoOperands(instruction);
 
-    if (instruction.dst().type() != OperandType::MemoryAddress) {
-        throw std::runtime_error("STORE destination must be memory address");
-    }
-
+    const std::size_t address = readMemoryAddress(instruction.dst());
     const std::int64_t value = readOperandValue(instruction.src());
-    writeDataMemory(instruction.dst().asMemoryAddress(), value);
+    writeDataMemory(address, value);
 
     state_.flags().updateZeroAndSign(value);
     advancePcUnlessHalted();
@@ -1604,11 +1611,33 @@ std::int64_t CPU::readOperandValue(const Operand& operand) {
         return operand.asImmediate();
 
     case OperandType::MemoryAddress:
-        return readDataMemory(operand.asMemoryAddress());
+    case OperandType::RegisterIndirectAddress:
+        return readDataMemory(readMemoryAddress(operand));
 
     default:
         throw std::runtime_error("Operand cannot be read as a value");
     }
+}
+
+std::size_t CPU::readMemoryAddress(const Operand& operand) {
+    if (operand.type() == OperandType::MemoryAddress) {
+        return operand.asMemoryAddress();
+    }
+
+    if (operand.type() == OperandType::RegisterIndirectAddress) {
+        const std::int64_t address =
+            state_.registers().get(operand.asRegisterIndirectBase());
+
+        if (address < 0) {
+            throw std::runtime_error(
+                "Negative register-indirect memory address"
+            );
+        }
+
+        return static_cast<std::size_t>(address);
+    }
+
+    throw std::runtime_error("Operand must be memory address");
 }
 
 void CPU::writeRegisterDestination(

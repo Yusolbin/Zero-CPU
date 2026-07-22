@@ -113,7 +113,7 @@ private:
     std::size_t readBinaryMemoryAddress(
         EncodedOperandType type,
         std::int64_t payload
-    ) const;
+    );
 
     std::size_t readBinaryCodeAddress(
         EncodedOperandType type,
@@ -170,6 +170,7 @@ private:
     void executeNot(const Instruction& instruction);
 
     std::int64_t readOperandValue(const Operand& operand);
+    std::size_t readMemoryAddress(const Operand& operand);
 
     void writeRegisterDestination(
         const Operand& operand,

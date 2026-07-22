@@ -12,6 +12,7 @@ enum class OperandType {
     Register,
     Immediate,
     MemoryAddress,
+    RegisterIndirectAddress,
     Label,
     None
 };
@@ -24,6 +25,7 @@ public:
     static Operand registerOperand(RegisterName reg);
     static Operand immediate(std::int64_t value);
     static Operand memoryAddress(std::size_t address);
+    static Operand registerIndirectAddress(RegisterName reg);
     static Operand label(std::string name);
 
     OperandType type() const;
@@ -31,12 +33,14 @@ public:
     bool isRegister() const;
     bool isImmediate() const;
     bool isMemoryAddress() const;
+    bool isRegisterIndirectAddress() const;
     bool isLabel() const;
     bool isNone() const;
 
     RegisterName asRegister() const;
     std::int64_t asImmediate() const;
     std::size_t asMemoryAddress() const;
+    RegisterName asRegisterIndirectBase() const;
     const std::string& asLabel() const;
 
     std::string toString() const;

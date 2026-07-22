@@ -269,6 +269,19 @@ Operand Assembler::parseOperand(
             operand.substr(1, operand.size() - 2)
         );
 
+        if (inner.empty()) {
+            throw std::runtime_error(
+                "Empty memory address at line "
+                + std::to_string(lineNumber)
+            );
+        }
+
+        if (isRegisterToken(inner)) {
+            return Operand::registerIndirectAddress(
+                parseRegister(inner, lineNumber)
+            );
+        }
+
         const std::int64_t address = parseInteger(inner, lineNumber);
 
         if (address < 0) {

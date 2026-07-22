@@ -125,6 +125,8 @@ EncodedOperandType InstructionDecoder::decodeOperandType(
         return EncodedOperandType::MemoryAddress;
     case 0x04:
         return EncodedOperandType::CodeAddress;
+    case 0x05:
+        return EncodedOperandType::RegisterIndirectAddress;
     default:
         throw std::runtime_error("Invalid encoded operand type");
     }

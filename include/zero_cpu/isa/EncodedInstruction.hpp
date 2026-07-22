@@ -12,7 +12,8 @@ enum class EncodedOperandType : std::uint8_t {
     Register = 0x01,
     Immediate = 0x02,
     MemoryAddress = 0x03,
-    CodeAddress = 0x04
+    CodeAddress = 0x04,
+    RegisterIndirectAddress = 0x05
 };
 
 struct DecodedInstruction {
