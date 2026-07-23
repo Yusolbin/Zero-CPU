@@ -3096,6 +3096,186 @@ int runMiniKernelSyscall6TimerDisableTest() {
 
 
 
+int runMiniKernelSyscall7TimerConfigureTest() {
+    using namespace zero_cpu;
+    using namespace zero_cpu::binary;
+
+    std::cout << "=== Zero-CPU Mini Kernel Syscall 7 Timer Configure Test ===\n\n";
+
+    const std::string sourcePath = "examples/mini_kernel_syscall7_timer_configure.zasm";
+    const std::string binaryPath = "examples/mini_kernel_syscall7_timer_configure.zbin";
+
+    Assembler assembler;
+    AssembledProgram assembled = assembler.assembleFile(sourcePath);
+
+    InstructionEncoder encoder;
+    std::vector<std::uint8_t> code = encoder.encodeProgram(
+        assembled.instructions,
+        assembled.labels
+    );
+
+    BinaryProgram program;
+    program.header.major_version = kMajorVersion;
+    program.header.minor_version = kMinorVersion;
+    program.header.endianness = BinaryEndianness::Little;
+    program.header.entry_point = 0;
+    program.header.code_size = static_cast<std::uint32_t>(code.size());
+    program.code = std::move(code);
+
+    BinaryWriter writer;
+    writer.writeFile(binaryPath, program);
+
+    CPU cpu;
+    auto controller = std::make_shared<InterruptController>();
+    auto bus = std::make_shared<MMIOBus>();
+    auto timer = std::make_shared<TimerDevice>(
+        controller,
+        32,
+        10,
+        111
+    );
+
+    constexpr std::uint8_t kSyscallVector = 80;
+    constexpr std::int64_t kNewInterval = 21;
+    constexpr std::int64_t kNewVector = 44;
+    constexpr std::int64_t kNewPayload = 888;
+
+    timer->setEnabled(false);
+
+    bus->mapDevice(
+        memory_map::kTimerBase,
+        memory_map::kTimerSize,
+        timer
+    );
+
+    cpu.setInterruptController(controller);
+    cpu.setMMIOBus(bus);
+    cpu.loadBinaryProgram(program);
+
+    const auto handlerIt = assembled.labels.find("syscall_handler");
+    if (handlerIt == assembled.labels.end()) {
+        std::cout << "[FAIL] syscall_handler label not found\n";
+        return 1;
+    }
+
+    const std::size_t handlerAddress =
+        cpu.binaryCodeBase() + handlerIt->second * kInstructionSize;
+
+    controller->setVectorHandler(kSyscallVector, handlerAddress);
+
+    std::cout << "Source: " << sourcePath << "\n";
+    std::cout << "Binary: " << binaryPath << "\n";
+    std::cout << "Syscall vector: "
+              << static_cast<int>(kSyscallVector)
+              << "\n";
+    std::cout << "Syscall convention:\n";
+    std::cout << "  R1 = syscall number\n";
+    std::cout << "  R2 = timer interval\n";
+    std::cout << "  R3 = timer interrupt vector\n";
+    std::cout << "  R4 = timer interrupt payload\n";
+    std::cout << "Handler PC: " << handlerAddress << "\n";
+    std::cout << "Timer MMIO: 0xF100..0xF12F\n";
+    std::cout << "Expected interval: " << kNewInterval << "\n";
+    std::cout << "Expected vector: " << kNewVector << "\n";
+    std::cout << "Expected payload: " << kNewPayload << "\n\n";
+
+    cpu.run();
+
+    std::cout << "=== Final CPU State ===\n";
+    std::cout << cpu.state().summary() << "\n";
+    std::cout << "Timer tick count = " << timer->tickCount() << "\n";
+    std::cout << "Timer interval = " << timer->interval() << "\n";
+    std::cout << "Timer vector = " << static_cast<int>(timer->vector()) << "\n";
+    std::cout << "Timer payload = " << timer->payload() << "\n";
+    std::cout << "Timer interrupt count = " << timer->interruptCount() << "\n";
+    std::cout << "Timer enabled = " << (timer->enabled() ? "true" : "false") << "\n";
+    std::cout << "Pending interrupts = " << controller->pendingCount() << "\n\n";
+
+    if (cpu.state().hasError()) {
+        std::cout << "Mini kernel syscall 7 timer configure test failed: "
+                  << cpu.state().errorMessage()
+                  << "\n";
+        return 1;
+    }
+
+    bool passed = true;
+
+    auto expect = [&passed](
+        const std::string& name,
+        std::int64_t actual,
+        std::int64_t expected
+    ) {
+        if (actual == expected) {
+            std::cout << "[PASS] "
+                      << name
+                      << " = "
+                      << actual
+                      << "\n";
+            return;
+        }
+
+        std::cout << "[FAIL] "
+                  << name
+                  << " expected "
+                  << expected
+                  << " but got "
+                  << actual
+                  << "\n";
+        passed = false;
+    };
+
+    auto expectCondition = [&passed](
+        const std::string& name,
+        bool condition
+    ) {
+        std::cout << (condition ? "[PASS] " : "[FAIL] ")
+                  << name
+                  << "\n";
+
+        if (!condition) {
+            passed = false;
+        }
+    };
+
+    expect("Memory[392] syscall vector", cpu.state().memory().read(392), 80);
+    expect("Memory[400] syscall number", cpu.state().memory().read(400), 7);
+    expect("Memory[408] interval argument", cpu.state().memory().read(408), kNewInterval);
+    expect("Memory[416] vector argument", cpu.state().memory().read(416), kNewVector);
+    expect("Memory[424] payload argument", cpu.state().memory().read(424), kNewPayload);
+    expect("Memory[432] syscall 7 dispatch marker", cpu.state().memory().read(432), 7);
+    expect("Memory[440] timer interval readback", cpu.state().memory().read(440), kNewInterval);
+    expect("Memory[448] timer vector readback", cpu.state().memory().read(448), kNewVector);
+    expect("Memory[456] timer payload readback", cpu.state().memory().read(456), kNewPayload);
+    expect("Memory[464] timer enabled readback", cpu.state().memory().read(464), 0);
+    expect("Memory[472] main resumed marker", cpu.state().memory().read(472), 777);
+
+    expect("R0 after syscall", cpu.state().registers().get(RegisterName::R0), 80);
+    expect("R1 syscall number preserved", cpu.state().registers().get(RegisterName::R1), 7);
+    expect("R2 timer interval preserved", cpu.state().registers().get(RegisterName::R2), kNewInterval);
+    expect("R3 timer vector preserved", cpu.state().registers().get(RegisterName::R3), kNewVector);
+    expect("R4 timer payload preserved", cpu.state().registers().get(RegisterName::R4), kNewPayload);
+    expect("R7 main resumed value", cpu.state().registers().get(RegisterName::R7), 777);
+
+    expect("TimerDevice interval", static_cast<std::int64_t>(timer->interval()), kNewInterval);
+    expect("TimerDevice vector", static_cast<std::int64_t>(timer->vector()), kNewVector);
+    expect("TimerDevice payload", timer->payload(), kNewPayload);
+    expect("TimerDevice interrupt count", static_cast<std::int64_t>(timer->interruptCount()), 0);
+
+    expectCondition("TimerDevice remains disabled after configure", !timer->enabled());
+    expectCondition("interrupt queue is empty after syscall 7", controller->pendingCount() == 0);
+    expectCondition("CPU halted after syscall 7 timer configure program", cpu.state().halted());
+
+    if (!passed) {
+        std::cout << "\nMini kernel syscall 7 timer configure test failed.\n";
+        return 1;
+    }
+
+    std::cout << "\nMini kernel syscall 7 timer configure test finished successfully.\n";
+    return 0;
+}
+
+
+
 int runRegisterIndirectMemoryTest() {
     using namespace zero_cpu;
     using namespace zero_cpu::binary;
@@ -3231,6 +3411,7 @@ void printUsage() {
     std::cout << "  zero_cli mini-kernel-syscall4-timer-read-test\n";
     std::cout << "  zero_cli mini-kernel-syscall5-timer-enable-test\n";
     std::cout << "  zero_cli mini-kernel-syscall6-timer-disable-test\n";
+    std::cout << "  zero_cli mini-kernel-syscall7-timer-configure-test\n";
     std::cout << "  zero_cli assemble <input.zasm> <output.zbin>\n";
     std::cout << "  zero_cli dump-binary <input.zbin>\n";
     std::cout << "  zero_cli load-binary <input.zbin>\n";
@@ -3417,6 +3598,17 @@ int main(int argc, char* argv[]) {
                 }
 
                 return runMiniKernelSyscall6TimerDisableTest();
+            }
+
+
+            if (command == "mini-kernel-syscall7-timer-configure-test") {
+                if (argc != 2) {
+                    std::cerr << "Invalid mini-kernel-syscall7-timer-configure-test command.\n\n";
+                    printUsage();
+                    return 1;
+                }
+
+                return runMiniKernelSyscall7TimerConfigureTest();
             }
 
             if (command == "assemble") {
