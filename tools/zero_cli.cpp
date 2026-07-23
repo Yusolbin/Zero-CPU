@@ -3475,6 +3475,190 @@ int runMiniKernelTimerLifecycleTest() {
 
 
 
+std::string joinPath(const std::string& directory, const std::string& fileName) {
+    if (directory.empty()) {
+        return fileName;
+    }
+
+    const char last = directory.back();
+
+    if (last == '/' || last == '\\') {
+        return directory + fileName;
+    }
+
+    return directory + "/" + fileName;
+}
+
+int runBioOSDirectory(const std::string& osDirectory) {
+    using namespace zero_cpu;
+    using namespace zero_cpu::binary;
+
+    std::cout << "=== Zero-CPU BIO-OS Run ===\n\n";
+
+    const std::vector<std::string> sourceParts = {
+        joinPath(osDirectory, "boot.zasm"),
+        joinPath(osDirectory, "kernel.zasm"),
+        joinPath(osDirectory, "user_program.zasm")
+    };
+
+    const std::string combinedSourcePath =
+        joinPath(osDirectory, "combined_boot.zasm");
+    const std::string binaryPath =
+        joinPath(osDirectory, "combined_boot.zbin");
+
+    {
+        std::ofstream combined(combinedSourcePath);
+
+        if (!combined) {
+            std::cout << "[FAIL] cannot create " << combinedSourcePath << "\n";
+            return 1;
+        }
+
+        for (const auto& part : sourceParts) {
+            std::ifstream input(part);
+
+            if (!input) {
+                std::cout << "[FAIL] cannot open " << part << "\n";
+                return 1;
+            }
+
+            combined << "\n; === " << part << " ===\n";
+            combined << input.rdbuf();
+            combined << "\n";
+        }
+    }
+
+    Assembler assembler;
+    AssembledProgram assembled = assembler.assembleFile(combinedSourcePath);
+
+    InstructionEncoder encoder;
+    std::vector<std::uint8_t> code = encoder.encodeProgram(
+        assembled.instructions,
+        assembled.labels
+    );
+
+    BinaryProgram program;
+    program.header.major_version = kMajorVersion;
+    program.header.minor_version = kMinorVersion;
+    program.header.endianness = BinaryEndianness::Little;
+    program.header.entry_point = 0;
+    program.header.code_size = static_cast<std::uint32_t>(code.size());
+    program.code = std::move(code);
+
+    BinaryWriter writer;
+    writer.writeFile(binaryPath, program);
+
+    CPU cpu;
+    auto controller = std::make_shared<InterruptController>();
+    auto bus = std::make_shared<MMIOBus>();
+    auto debugOutputDevice = std::make_shared<DebugOutputDevice>();
+    auto timer = std::make_shared<TimerDevice>(
+        controller,
+        44,
+        1000,
+        0
+    );
+
+    constexpr std::uint8_t kSyscallVector = 80;
+    constexpr std::uint8_t kTimerVector = 44;
+
+    timer->setEnabled(false);
+
+    bus->mapDevice(
+        memory_map::kDebugOutputBase,
+        memory_map::kDebugOutputSize,
+        debugOutputDevice
+    );
+
+    bus->mapDevice(
+        memory_map::kTimerBase,
+        memory_map::kTimerSize,
+        timer
+    );
+
+    cpu.setInterruptController(controller);
+    cpu.setMMIOBus(bus);
+    cpu.addClockedDevice(timer);
+    cpu.loadBinaryProgram(program);
+
+    // The BIO-OS combined program is large enough to reach the default
+    // stack base at 2048. Move the stack higher for this demo, but keep
+    // it below the memory limit so the first PUSH is in range.
+    cpu.state().setSp(4000);
+
+    const auto syscallHandlerIt = assembled.labels.find("syscall_handler");
+    if (syscallHandlerIt == assembled.labels.end()) {
+        std::cout << "[FAIL] syscall_handler label not found\n";
+        return 1;
+    }
+
+    const auto timerHandlerIt = assembled.labels.find("timer_handler");
+    if (timerHandlerIt == assembled.labels.end()) {
+        std::cout << "[FAIL] timer_handler label not found\n";
+        return 1;
+    }
+
+    const std::size_t syscallHandlerAddress =
+        cpu.binaryCodeBase() + syscallHandlerIt->second * kInstructionSize;
+
+    const std::size_t timerHandlerAddress =
+        cpu.binaryCodeBase() + timerHandlerIt->second * kInstructionSize;
+
+    controller->setVectorHandler(kSyscallVector, syscallHandlerAddress);
+    controller->setVectorHandler(kTimerVector, timerHandlerAddress);
+
+    std::cout << "OS directory: " << osDirectory << "\n";
+    std::cout << "Source parts:\n";
+    for (const auto& part : sourceParts) {
+        std::cout << "  " << part << "\n";
+    }
+
+    std::cout << "Combined source: " << combinedSourcePath << "\n";
+    std::cout << "Binary: " << binaryPath << "\n";
+    std::cout << "Syscall vector: " << static_cast<int>(kSyscallVector) << "\n";
+    std::cout << "Timer vector: " << static_cast<int>(kTimerVector) << "\n";
+    std::cout << "Syscall handler PC: " << syscallHandlerAddress << "\n";
+    std::cout << "Timer handler PC: " << timerHandlerAddress << "\n";
+    std::cout << "Debug MMIO: 0xF000..0xF00F\n";
+    std::cout << "Timer MMIO: 0xF100..0xF12F\n\n";
+
+    cpu.run();
+
+    std::cout << "=== BIO-OS Final CPU State ===\n";
+    std::cout << cpu.state().summary() << "\n";
+    printDebugOutputDevice(*debugOutputDevice);
+    std::cout << "\n";
+    std::cout << "Timer tick count = " << timer->tickCount() << "\n";
+    std::cout << "Timer interval = " << timer->interval() << "\n";
+    std::cout << "Timer vector = " << static_cast<int>(timer->vector()) << "\n";
+    std::cout << "Timer payload = " << timer->payload() << "\n";
+    std::cout << "Timer interrupt count = " << timer->interruptCount() << "\n";
+    std::cout << "Timer enabled = " << (timer->enabled() ? "true" : "false") << "\n";
+    std::cout << "Pending interrupts = " << controller->pendingCount() << "\n\n";
+
+    if (cpu.state().hasError()) {
+        std::cout << "BIO-OS run failed: "
+                  << cpu.state().errorMessage()
+                  << "\n";
+        return 1;
+    }
+
+    if (!cpu.state().halted()) {
+        std::cout << "BIO-OS run failed: CPU did not halt.\n";
+        return 1;
+    }
+
+    if (debugOutputDevice->writes().empty()) {
+        std::cout << "BIO-OS run failed: no debug output captured.\n";
+        return 1;
+    }
+
+    std::cout << "BIO-OS run finished successfully.\n";
+    return 0;
+}
+
+
+
 int runBioOSCombinedBootTest() {
     using namespace zero_cpu;
     using namespace zero_cpu::binary;
@@ -3862,6 +4046,7 @@ void printUsage() {
     std::cout << "  zero_cli mini-kernel-syscall7-timer-configure-test\n";
     std::cout << "  zero_cli mini-kernel-timer-lifecycle-test\n";
     std::cout << "  zero_cli bio-os-combined-boot-test\n";
+    std::cout << "  zero_cli run-os <bio_os_directory>\n";
     std::cout << "  zero_cli assemble <input.zasm> <output.zbin>\n";
     std::cout << "  zero_cli dump-binary <input.zbin>\n";
     std::cout << "  zero_cli load-binary <input.zbin>\n";
@@ -4081,6 +4266,17 @@ int main(int argc, char* argv[]) {
                 }
 
                 return runBioOSCombinedBootTest();
+            }
+
+
+            if (command == "run-os") {
+                if (argc != 3) {
+                    std::cerr << "Invalid run-os command.\n\n";
+                    printUsage();
+                    return 1;
+                }
+
+                return runBioOSDirectory(argv[2]);
             }
 
             if (command == "assemble") {
