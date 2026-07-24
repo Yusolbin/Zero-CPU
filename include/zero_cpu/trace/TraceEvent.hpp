@@ -48,6 +48,11 @@ public:
     const std::vector<FlagChange>& changedFlags() const;
     const std::vector<MemoryChange>& changedMemory() const;
 
+    const std::string& stage() const;
+    const std::string& action() const;
+    const std::vector<std::string>& datapathNodes() const;
+    std::string datapathString() const;
+
     bool hasError() const;
     const std::string& errorMessage() const;
 
@@ -63,6 +68,10 @@ private:
     std::vector<FlagChange> changed_flags_;
     std::vector<MemoryChange> changed_memory_;
 
+    std::string stage_;
+    std::string action_;
+    std::vector<std::string> datapath_nodes_;
+
     std::string error_message_;
 
     void analyzeChanges();
@@ -70,9 +79,15 @@ private:
     void analyzeRegisterChanges();
     void analyzeFlagChanges();
     void analyzeMemoryChanges();
+    void analyzeVisualMetadata();
+
+    void addDatapathNode(std::string node);
 
     static std::string boolToString(bool value);
     static std::string formatPc(std::size_t pc);
+    static std::string joinDatapathNodes(
+        const std::vector<std::string>& nodes
+    );
 };
 
 } // namespace zero_cpu
