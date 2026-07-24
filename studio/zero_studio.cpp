@@ -34,7 +34,11 @@
 namespace {
 
 constexpr int kWindowWidth = 1500;
-constexpr int kWindowHeight = 920;
+constexpr int kWindowHeight = 900;
+
+constexpr int kScrollableContentHeight = 1060;
+constexpr int kScrollLineSize = 40;
+constexpr int kScrollPageSize = 240;
 
 constexpr int kIdInputEdit = 1001;
 constexpr int kIdOutputEdit = 1002;
@@ -53,6 +57,7 @@ constexpr int kIdBreakpointEdit = 1014;
 constexpr int kIdAddBreakpointButton = 1015;
 constexpr int kIdClearBreakpointsButton = 1016;
 constexpr int kIdRunBioOSButton = 1017;
+constexpr int kIdDatapathCanvas = 1018;
 
 constexpr std::size_t kDataViewStart = 96;
 constexpr std::size_t kDataViewCount = 16;
@@ -89,6 +94,7 @@ HWND g_breakpointEdit = nullptr;
 HWND g_addBreakpointButton = nullptr;
 HWND g_clearBreakpointsButton = nullptr;
 HWND g_runBioOSButton = nullptr;
+HWND g_datapathCanvas = nullptr;
 
 zero_cpu::CPU g_cpu;
 std::shared_ptr<zero_cpu::InterruptController> g_interruptController;
@@ -99,6 +105,91 @@ StudioMode g_mode = StudioMode::None;
 bool g_programLoaded = false;
 std::string g_loadedPath;
 std::vector<std::size_t> g_breakpoints;
+int g_scrollY = 0;
+
+int getMainScrollMax(HWND hwnd) {
+    RECT clientRect;
+    GetClientRect(hwnd, &clientRect);
+
+    const int clientHeight = clientRect.bottom - clientRect.top;
+
+    if (kScrollableContentHeight <= clientHeight) {
+        return 0;
+    }
+
+    return kScrollableContentHeight - clientHeight;
+}
+
+int clampMainScroll(HWND hwnd, int value) {
+    const int maxScroll = getMainScrollMax(hwnd);
+
+    if (value < 0) {
+        return 0;
+    }
+
+    if (value > maxScroll) {
+        return maxScroll;
+    }
+
+    return value;
+}
+
+void updateMainScrollBar(HWND hwnd) {
+    RECT clientRect;
+    GetClientRect(hwnd, &clientRect);
+
+    SCROLLINFO info = {};
+    info.cbSize = sizeof(info);
+    info.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+    info.nMin = 0;
+    info.nMax = kScrollableContentHeight - 1;
+    info.nPage = static_cast<UINT>(clientRect.bottom - clientRect.top);
+    info.nPos = g_scrollY;
+
+    SetScrollInfo(hwnd, SB_VERT, &info, TRUE);
+}
+
+void setMainScrollPosition(HWND hwnd, int requestedScrollY) {
+    const int newScrollY = clampMainScroll(hwnd, requestedScrollY);
+    const int deltaY = g_scrollY - newScrollY;
+
+    if (deltaY == 0) {
+        updateMainScrollBar(hwnd);
+
+        RedrawWindow(
+            hwnd,
+            nullptr,
+            nullptr,
+            RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE
+        );
+
+        return;
+    }
+
+    g_scrollY = newScrollY;
+
+    ScrollWindowEx(
+        hwnd,
+        0,
+        deltaY,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        SW_SCROLLCHILDREN | SW_INVALIDATE | SW_ERASE
+    );
+
+    updateMainScrollBar(hwnd);
+
+    RedrawWindow(
+        hwnd,
+        nullptr,
+        nullptr,
+        RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE | RDW_UPDATENOW
+    );
+}
+
+
 
 HMENU controlId(int id) {
     return reinterpret_cast<HMENU>(static_cast<INT_PTR>(id));
@@ -697,10 +788,289 @@ std::string makeVisualDatapathView() {
 }
 
 
+bool latestTraceHasNode(const std::string& nodeName) {
+    const auto& events = g_cpu.traceLogger().events();
+
+    if (events.empty()) {
+        return false;
+    }
+
+    const auto& nodes = events.back().datapathNodes();
+
+    for (const std::string& node : nodes) {
+        if (node == nodeName) {
+            return true;
+        }
+
+        if (nodeName == "Memory/MMIO" && node == "Memory") {
+            return true;
+        }
+
+        if (nodeName == "Memory" && node == "Memory/MMIO") {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void drawCenteredText(
+    HDC hdc,
+    const RECT& rect,
+    const std::string& text
+) {
+    DrawTextA(
+        hdc,
+        text.c_str(),
+        -1,
+        const_cast<RECT*>(&rect),
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE
+    );
+}
+
+void drawArrow(
+    HDC hdc,
+    int x1,
+    int y1,
+    int x2,
+    int y2,
+    bool active
+) {
+    HPEN pen = CreatePen(
+        PS_SOLID,
+        active ? 3 : 1,
+        active ? RGB(230, 120, 20) : RGB(120, 120, 120)
+    );
+
+    HPEN oldPen = static_cast<HPEN>(SelectObject(hdc, pen));
+
+    MoveToEx(hdc, x1, y1, nullptr);
+    LineTo(hdc, x2, y2);
+
+    const int arrowSize = active ? 7 : 5;
+
+    POINT points[3] = {
+        {x2, y2},
+        {x2 - arrowSize, y2 - arrowSize},
+        {x2 - arrowSize, y2 + arrowSize}
+    };
+
+    HBRUSH brush = CreateSolidBrush(
+        active ? RGB(230, 120, 20) : RGB(120, 120, 120)
+    );
+
+    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(hdc, brush));
+
+    Polygon(hdc, points, 3);
+
+    SelectObject(hdc, oldBrush);
+    DeleteObject(brush);
+
+    SelectObject(hdc, oldPen);
+    DeleteObject(pen);
+}
+
+void drawDatapathBox(
+    HDC hdc,
+    const RECT& rect,
+    const std::string& label,
+    bool active
+) {
+    HBRUSH fillBrush = CreateSolidBrush(
+        active ? RGB(255, 225, 120) : RGB(245, 245, 245)
+    );
+
+    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(hdc, fillBrush));
+
+    HPEN borderPen = CreatePen(
+        PS_SOLID,
+        active ? 3 : 1,
+        active ? RGB(210, 95, 0) : RGB(100, 100, 100)
+    );
+
+    HPEN oldPen = static_cast<HPEN>(SelectObject(hdc, borderPen));
+
+    RoundRect(
+        hdc,
+        rect.left,
+        rect.top,
+        rect.right,
+        rect.bottom,
+        14,
+        14
+    );
+
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(
+        hdc,
+        active ? RGB(20, 20, 20) : RGB(70, 70, 70)
+    );
+
+    drawCenteredText(hdc, rect, label);
+
+    SelectObject(hdc, oldPen);
+    DeleteObject(borderPen);
+
+    SelectObject(hdc, oldBrush);
+    DeleteObject(fillBrush);
+}
+
+void drawDatapathCanvas(HDC hdc, const RECT& clientRect) {
+    HBRUSH backgroundBrush = CreateSolidBrush(RGB(32, 34, 38));
+    FillRect(hdc, &clientRect, backgroundBrush);
+    DeleteObject(backgroundBrush);
+
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, RGB(235, 235, 235));
+
+    RECT titleRect = {
+        12,
+        8,
+        clientRect.right - 12,
+        28
+    };
+
+    std::string title = "Zero-CPU Visual Datapath";
+
+    const auto& events = g_cpu.traceLogger().events();
+
+    if (!events.empty()) {
+        const auto& event = events.back();
+
+        title += " | ";
+        title += event.action();
+        title += " | ";
+        title += event.instruction().toString();
+        title += " | PC ";
+        title += std::to_string(event.pcBefore());
+        title += " -> ";
+        title += std::to_string(event.pcAfter());
+    } else {
+        title += " | waiting for TraceEvent";
+    }
+
+    DrawTextA(
+        hdc,
+        title.c_str(),
+        -1,
+        &titleRect,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE
+    );
+
+    const int top = 38;
+    const int boxWidth = 126;
+    const int boxHeight = 32;
+    const int gap = 18;
+
+    RECT pc = {20, top, 20 + boxWidth, top + boxHeight};
+    RECT imem = {pc.right + gap, top, pc.right + gap + boxWidth, top + boxHeight};
+    RECT decoder = {imem.right + gap, top, imem.right + gap + boxWidth, top + boxHeight};
+    RECT regfile = {decoder.right + gap, top, decoder.right + gap + boxWidth, top + boxHeight};
+    RECT alu = {regfile.right + gap, top, regfile.right + gap + boxWidth, top + boxHeight};
+    RECT flags = {alu.right + gap, top, alu.right + gap + boxWidth, top + boxHeight};
+    RECT writeback = {flags.right + gap, top, flags.right + gap + boxWidth, top + boxHeight};
+
+    const int lowerTop = 86;
+
+    RECT memory = {regfile.left, lowerTop, regfile.right, lowerTop + boxHeight};
+    RECT stack = {alu.left, lowerTop, alu.right, lowerTop + boxHeight};
+    RECT interrupt = {flags.left, lowerTop, flags.right + 46, lowerTop + boxHeight};
+
+    drawDatapathBox(hdc, pc, "PC", latestTraceHasNode("PC"));
+    drawDatapathBox(hdc, imem, "Instruction", latestTraceHasNode("InstructionMemory"));
+    drawDatapathBox(hdc, decoder, "Decoder", latestTraceHasNode("Decoder"));
+    drawDatapathBox(hdc, regfile, "RegisterFile", latestTraceHasNode("RegisterFile"));
+    drawDatapathBox(hdc, alu, "ALU", latestTraceHasNode("ALU"));
+    drawDatapathBox(hdc, flags, "Flags", latestTraceHasNode("Flags"));
+    drawDatapathBox(hdc, writeback, "Writeback", latestTraceHasNode("Writeback"));
+
+    drawDatapathBox(hdc, memory, "Memory/MMIO", latestTraceHasNode("Memory/MMIO"));
+    drawDatapathBox(hdc, stack, "Stack", latestTraceHasNode("Stack"));
+    drawDatapathBox(hdc, interrupt, "InterruptCtl", latestTraceHasNode("InterruptController"));
+
+    drawArrow(hdc, pc.right, top + boxHeight / 2, imem.left, top + boxHeight / 2, latestTraceHasNode("PC"));
+    drawArrow(hdc, imem.right, top + boxHeight / 2, decoder.left, top + boxHeight / 2, latestTraceHasNode("InstructionMemory"));
+    drawArrow(hdc, decoder.right, top + boxHeight / 2, regfile.left, top + boxHeight / 2, latestTraceHasNode("Decoder"));
+    drawArrow(hdc, regfile.right, top + boxHeight / 2, alu.left, top + boxHeight / 2, latestTraceHasNode("RegisterFile"));
+    drawArrow(hdc, alu.right, top + boxHeight / 2, flags.left, top + boxHeight / 2, latestTraceHasNode("ALU"));
+    drawArrow(hdc, flags.right, top + boxHeight / 2, writeback.left, top + boxHeight / 2, latestTraceHasNode("Flags"));
+
+    drawArrow(hdc, regfile.left + boxWidth / 2, regfile.bottom, memory.left + boxWidth / 2, memory.top, latestTraceHasNode("Memory/MMIO"));
+    drawArrow(hdc, alu.left + boxWidth / 2, alu.bottom, stack.left + boxWidth / 2, stack.top, latestTraceHasNode("Stack"));
+    drawArrow(hdc, flags.left + boxWidth / 2, flags.bottom, interrupt.left + 60, interrupt.top, latestTraceHasNode("InterruptController"));
+
+    SetTextColor(hdc, RGB(185, 185, 185));
+
+    RECT hintRect = {
+        20,
+        124,
+        clientRect.right - 20,
+        144
+    };
+
+    DrawTextA(
+        hdc,
+        "Highlighted blocks come from the latest TraceEvent.",
+        -1,
+        &hintRect,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE
+    );
+}
+
+
+
+LRESULT CALLBACK datapathCanvasProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam
+) {
+    switch (message) {
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+
+        RECT clientRect;
+        GetClientRect(hwnd, &clientRect);
+
+        drawDatapathCanvas(hdc, clientRect);
+
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+
+    case WM_ERASEBKGND:
+        return 1;
+
+    default:
+        break;
+    }
+
+    return DefWindowProcA(hwnd, message, wParam, lParam);
+}
+
+bool registerDatapathCanvasClass(HINSTANCE instance) {
+    const char* className = "ZeroCPUDatapathCanvasClass";
+
+    WNDCLASSA wc = {};
+    wc.lpfnWndProc = datapathCanvasProc;
+    wc.hInstance = instance;
+    wc.lpszClassName = className;
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+
+    if (!RegisterClassA(&wc)) {
+        return GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+    }
+
+    return true;
+}
+
+
 std::string makeStateView() {
     std::ostringstream oss;
 
-    oss << "Zero-CPU Studio v0.10\n";
+    oss << "Zero-CPU Studio v0.15\n";
     oss << "Mode: " << modeToString(g_mode) << "\n";
 
     if (g_programLoaded) {
@@ -757,6 +1127,10 @@ std::string makeStateView() {
 
 void refreshStateView() {
     setEditText(g_stateEdit, makeStateView());
+
+    if (g_datapathCanvas != nullptr) {
+        InvalidateRect(g_datapathCanvas, nullptr, TRUE);
+    }
 }
 
 bool saveSourceEditorToFile(const std::string& inputPath) {
@@ -1427,13 +1801,20 @@ void onResetClicked() {
 
     setEditText(
         g_traceEdit,
-        "Zero-CPU Studio v0.10\n"
+        "Zero-CPU Studio v0.15\n"
         "\n"
         "Ready.\n"
         "Source editor added.\n"
         "System panel added.\n"
         "BIO-OS runner added.\n"
         "Studio BIO-OS runner uses BioOSRunner.\n"
+        "Graphical datapath canvas added.\n"
+        "Main window scrolling added.\n"
+        "Compact datapath canvas layout added.\n"
+        "Scroll repaint fixed.\n"
+        "Datapath canvas layout fixed.\n"
+        "Compact datapath canvas layout added.\n"
+        "Scroll repaint fixed.\n"
         "\n"
         "Workflow:\n"
         "  1. Edit .zasm in Source Editor\n"
@@ -1860,6 +2241,36 @@ LRESULT CALLBACK windowProc(
             nullptr
         );
 
+        CreateWindowExA(
+            0,
+            "STATIC",
+            "Datapath Canvas:",
+            WS_CHILD | WS_VISIBLE,
+            20,
+            835,
+            260,
+            24,
+            hwnd,
+            nullptr,
+            nullptr,
+            nullptr
+        );
+
+        g_datapathCanvas = CreateWindowExA(
+            WS_EX_CLIENTEDGE,
+            "ZeroCPUDatapathCanvasClass",
+            "",
+            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+            20,
+            860,
+            1430,
+            150,
+            hwnd,
+            controlId(kIdDatapathCanvas),
+            nullptr,
+            nullptr
+        );
+
         applyFont(g_inputEdit, font);
         applyFont(g_outputEdit, font);
         applyFont(g_loadSourceButton, font);
@@ -1877,8 +2288,83 @@ LRESULT CALLBACK windowProc(
         applyFont(g_sourceEdit, font);
         applyFont(g_stateEdit, font);
         applyFont(g_traceEdit, font);
+        applyFont(g_datapathCanvas, font);
 
         onResetClicked();
+        updateMainScrollBar(hwnd);
+
+        return 0;
+    }
+
+    case WM_SIZE: {
+        const int maxScroll = getMainScrollMax(hwnd);
+
+        if (g_scrollY > maxScroll) {
+            setMainScrollPosition(hwnd, maxScroll);
+        } else {
+            updateMainScrollBar(hwnd);
+        }
+
+        return 0;
+    }
+
+    case WM_VSCROLL: {
+        int nextScrollY = g_scrollY;
+
+        switch (LOWORD(wParam)) {
+        case SB_LINEUP:
+            nextScrollY -= kScrollLineSize;
+            break;
+
+        case SB_LINEDOWN:
+            nextScrollY += kScrollLineSize;
+            break;
+
+        case SB_PAGEUP:
+            nextScrollY -= kScrollPageSize;
+            break;
+
+        case SB_PAGEDOWN:
+            nextScrollY += kScrollPageSize;
+            break;
+
+        case SB_THUMBTRACK:
+        case SB_THUMBPOSITION: {
+            SCROLLINFO info = {};
+            info.cbSize = sizeof(info);
+            info.fMask = SIF_TRACKPOS;
+
+            if (GetScrollInfo(hwnd, SB_VERT, &info)) {
+                nextScrollY = info.nTrackPos;
+            }
+
+            break;
+        }
+
+        case SB_TOP:
+            nextScrollY = 0;
+            break;
+
+        case SB_BOTTOM:
+            nextScrollY = getMainScrollMax(hwnd);
+            break;
+
+        default:
+            break;
+        }
+
+        setMainScrollPosition(hwnd, nextScrollY);
+        return 0;
+    }
+
+    case WM_MOUSEWHEEL: {
+        const int wheelDelta = GET_WHEEL_DELTA_WPARAM(wParam);
+        const int scrollSteps = wheelDelta / WHEEL_DELTA;
+
+        setMainScrollPosition(
+            hwnd,
+            g_scrollY - scrollSteps * kScrollLineSize * 3
+        );
 
         return 0;
     }
@@ -1988,11 +2474,21 @@ int WINAPI WinMain(
         return 1;
     }
 
+    if (!registerDatapathCanvasClass(instance)) {
+        MessageBoxA(
+            nullptr,
+            "Failed to register datapath canvas class.",
+            "Zero-CPU Studio Error",
+            MB_ICONERROR
+        );
+        return 1;
+    }
+
     HWND hwnd = CreateWindowExA(
         0,
         className,
         "Zero-CPU Studio",
-        WS_OVERLAPPEDWINDOW,
+        WS_OVERLAPPEDWINDOW | WS_VSCROLL | WS_CLIPCHILDREN,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         kWindowWidth,
