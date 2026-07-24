@@ -3950,6 +3950,92 @@ int runBioOSCombinedBootTest() {
 
 
 
+struct SyscallInfo {
+    int number;
+    const char* name;
+    const char* inputs;
+    const char* returns;
+    const char* effect;
+};
+
+const std::vector<SyscallInfo>& syscallTable() {
+    static const std::vector<SyscallInfo> table = {
+        {
+            1,
+            "debug output",
+            "R2 = value",
+            "-",
+            "write value to DebugOutputDevice"
+        },
+        {
+            2,
+            "memory write",
+            "R2 = address, R3 = value",
+            "-",
+            "write Memory[R2] = R3"
+        },
+        {
+            3,
+            "exit",
+            "R2 = exit code",
+            "R7 = exit code",
+            "halted CPU",
+        },
+        {
+            4,
+            "timer read",
+            "-",
+            "R2 = tick count",
+            "read TimerDevice tick count"
+        },
+        {
+            5,
+            "timer enable",
+            "R2 = interval, R3 = vector",
+            "-",
+            "configure interval/vector and enable timer"
+        },
+        {
+            6,
+            "timer disable",
+            "-",
+            "-",
+            "disable timer"
+        },
+        {
+            7,
+            "timer configure",
+            "R2 = interval, R3 = vector, R4 = payload",
+            "-",
+            "configure timer interval/vector/payload"
+        }
+    };
+
+    return table;
+}
+
+void printSyscallTable() {
+    std::cout << "=== Zero-CPU Syscall Table ===\n\n";
+    std::cout << "Convention:\n";
+    std::cout << "  R1 = syscall number\n";
+    std::cout << "  R2 = argument 0 / return value\n";
+    std::cout << "  R3 = argument 1\n";
+    std::cout << "  R4 = argument 2\n";
+    std::cout << "  INT 80\n\n";
+
+    for (const SyscallInfo& syscall : syscallTable()) {
+        std::cout << "syscall "
+                  << syscall.number
+                  << " = "
+                  << syscall.name
+                  << "\n";
+        std::cout << "  inputs : " << syscall.inputs << "\n";
+        std::cout << "  returns: " << syscall.returns << "\n";
+        std::cout << "  effect : " << syscall.effect << "\n\n";
+    }
+}
+
+
 int runInterruptFlagsRestoreTest() {
     using namespace zero_cpu;
     using namespace zero_cpu::binary;
@@ -4221,6 +4307,7 @@ void printUsage() {
     std::cout << "  zero_cli mini-kernel-timer-lifecycle-test\n";
     std::cout << "  zero_cli bio-os-combined-boot-test\n";
     std::cout << "  zero_cli run-os <bio_os_directory>\n";
+    std::cout << "  zero_cli syscall-table\n";
     std::cout << "  zero_cli assemble <input.zasm> <output.zbin>\n";
     std::cout << "  zero_cli dump-binary <input.zbin>\n";
     std::cout << "  zero_cli load-binary <input.zbin>\n";
@@ -4462,6 +4549,18 @@ int main(int argc, char* argv[]) {
                 }
 
                 return runInterruptFlagsRestoreTest();
+            }
+
+
+            if (command == "syscall-table") {
+                if (argc != 2) {
+                    std::cerr << "Invalid syscall-table command.\n\n";
+                    printUsage();
+                    return 1;
+                }
+
+                printSyscallTable();
+                return 0;
             }
 
             if (command == "assemble") {
