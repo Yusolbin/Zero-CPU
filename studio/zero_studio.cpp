@@ -5,6 +5,7 @@
 #include "zero_cpu/binary/BinaryWriter.hpp"
 #include "zero_cpu/core/CPU.hpp"
 #include "zero_cpu/system/BioOSRunner.hpp"
+#include "zero_cpu/trace/TraceEvent.hpp"
 #include "zero_cpu/core/DebugOutputDevice.hpp"
 #include "zero_cpu/core/InterruptController.hpp"
 #include "zero_cpu/core/MMIOBus.hpp"
@@ -561,10 +562,145 @@ std::string makeSystemPanelView() {
     return oss.str();
 }
 
+std::string makeVisualDatapathView() {
+    std::ostringstream oss;
+
+    oss << "Visual Datapath Panel\n";
+
+    const auto& events = g_cpu.traceLogger().events();
+
+    oss << "Trace Events = "
+        << events.size()
+        << "\n";
+
+    if (events.empty()) {
+        oss << "Last Event = <none>\n";
+        oss << "Hint = Step or Run a program to generate TraceEvent data.\n";
+        return oss.str();
+    }
+
+    const auto& event = events.back();
+
+    oss << "Instruction = "
+        << event.instruction().toString()
+        << "\n";
+
+    oss << "PC = "
+        << event.pcBefore()
+        << " -> "
+        << event.pcAfter()
+        << "\n";
+
+    oss << "Stage = "
+        << event.stage()
+        << "\n";
+
+    oss << "Action = "
+        << event.action()
+        << "\n";
+
+    oss << "Path = "
+        << event.datapathString()
+        << "\n";
+
+    if (event.hasError()) {
+        oss << "Error = "
+            << event.errorMessage()
+            << "\n";
+    }
+
+    oss << "\n";
+    oss << "Datapath Nodes\n";
+
+    const auto& nodes = event.datapathNodes();
+
+    if (nodes.empty()) {
+        oss << "  None\n";
+    } else {
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            oss << "  ["
+                << i
+                << "] "
+                << nodes[i]
+                << "\n";
+        }
+    }
+
+    oss << "\n";
+    oss << "Register Changes\n";
+
+    if (event.changedRegisters().empty()) {
+        oss << "  None\n";
+    } else {
+        for (const auto& change : event.changedRegisters()) {
+            oss << "  "
+                << change.name
+                << ": "
+                << change.before
+                << " -> "
+                << change.after
+                << "\n";
+        }
+    }
+
+    oss << "\n";
+    oss << "Flag Changes\n";
+
+    if (event.changedFlags().empty()) {
+        oss << "  None\n";
+    } else {
+        for (const auto& change : event.changedFlags()) {
+            oss << "  "
+                << change.name
+                << ": "
+                << (change.before ? 1 : 0)
+                << " -> "
+                << (change.after ? 1 : 0)
+                << "\n";
+        }
+    }
+
+    oss << "\n";
+    oss << "Memory Changes\n";
+
+    if (event.changedMemory().empty()) {
+        oss << "  None\n";
+    } else {
+        constexpr std::size_t kMaxVisibleMemoryChanges = 16;
+        const std::size_t memoryChangeCount = event.changedMemory().size();
+
+        const std::size_t visibleCount =
+            memoryChangeCount < kMaxVisibleMemoryChanges
+                ? memoryChangeCount
+                : kMaxVisibleMemoryChanges;
+
+        for (std::size_t i = 0; i < visibleCount; ++i) {
+            const auto& change = event.changedMemory()[i];
+
+            oss << "  Memory["
+                << change.address
+                << "]: "
+                << change.before
+                << " -> "
+                << change.after
+                << "\n";
+        }
+
+        if (event.changedMemory().size() > visibleCount) {
+            oss << "  ... "
+                << (event.changedMemory().size() - visibleCount)
+                << " more memory changes hidden\n";
+        }
+    }
+
+    return oss.str();
+}
+
+
 std::string makeStateView() {
     std::ostringstream oss;
 
-    oss << "Zero-CPU Studio v0.9\n";
+    oss << "Zero-CPU Studio v0.10\n";
     oss << "Mode: " << modeToString(g_mode) << "\n";
 
     if (g_programLoaded) {
@@ -600,6 +736,9 @@ std::string makeStateView() {
         oss << "\n";
         oss << makeBinaryInfoView();
     }
+
+    oss << "\n";
+    oss << makeVisualDatapathView();
 
     oss << "\n";
     oss << makeSystemPanelView();
@@ -1288,7 +1427,7 @@ void onResetClicked() {
 
     setEditText(
         g_traceEdit,
-        "Zero-CPU Studio v0.9\n"
+        "Zero-CPU Studio v0.10\n"
         "\n"
         "Ready.\n"
         "Source editor added.\n"
