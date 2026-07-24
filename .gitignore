@@ -49,3 +49,8 @@ examples/bio_os/combined_boot.zasm
 zero_cpu_*_files/
 register_indirect_full_files/
 zero_cpu_register_indirect_full_files/
+
+
+# Local patch helper scripts
+scripts/patch_*.ps1
+scripts/force_patch_*.ps1
