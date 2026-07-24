@@ -3905,6 +3905,137 @@ int runBioOSCombinedBootTest() {
 
 
 
+int runInterruptFlagsRestoreTest() {
+    using namespace zero_cpu;
+    using namespace zero_cpu::binary;
+
+    std::cout << "=== Zero-CPU Interrupt FLAGS Restore Test ===\n\n";
+
+    const std::string sourcePath = "examples/interrupt_flags_restore.zasm";
+    const std::string binaryPath = "examples/interrupt_flags_restore.zbin";
+
+    Assembler assembler;
+    AssembledProgram assembled = assembler.assembleFile(sourcePath);
+
+    InstructionEncoder encoder;
+    std::vector<std::uint8_t> code = encoder.encodeProgram(
+        assembled.instructions,
+        assembled.labels
+    );
+
+    BinaryProgram program;
+    program.header.major_version = kMajorVersion;
+    program.header.minor_version = kMinorVersion;
+    program.header.endianness = BinaryEndianness::Little;
+    program.header.entry_point = 0;
+    program.header.code_size = static_cast<std::uint32_t>(code.size());
+    program.code = std::move(code);
+
+    BinaryWriter writer;
+    writer.writeFile(binaryPath, program);
+
+    CPU cpu;
+    auto controller = std::make_shared<InterruptController>();
+
+    constexpr std::uint8_t kInterruptVector = 80;
+
+    cpu.setInterruptController(controller);
+    cpu.loadBinaryProgram(program);
+
+    const auto handlerIt = assembled.labels.find("interrupt_handler");
+    if (handlerIt == assembled.labels.end()) {
+        std::cout << "[FAIL] interrupt_handler label not found\n";
+        return 1;
+    }
+
+    const std::size_t handlerAddress =
+        cpu.binaryCodeBase() + handlerIt->second * kInstructionSize;
+
+    controller->setVectorHandler(kInterruptVector, handlerAddress);
+
+    std::cout << "Source: " << sourcePath << "\n";
+    std::cout << "Binary: " << binaryPath << "\n";
+    std::cout << "Interrupt vector: "
+              << static_cast<int>(kInterruptVector)
+              << "\n";
+    std::cout << "Handler PC: " << handlerAddress << "\n";
+    std::cout << "Expected behavior:\n";
+    std::cout << "  main sets ZF=1 with CMP R1, 5\n";
+    std::cout << "  interrupt handler intentionally changes FLAGS\n";
+    std::cout << "  IRET must restore original ZF=1\n";
+    std::cout << "  JE flags_restored must be taken\n\n";
+
+    cpu.run();
+
+    std::cout << "=== Final CPU State ===\n";
+    std::cout << cpu.state().summary() << "\n\n";
+
+    if (cpu.state().hasError()) {
+        std::cout << "Interrupt FLAGS restore test failed: "
+                  << cpu.state().errorMessage()
+                  << "\n";
+        return 1;
+    }
+
+    bool passed = true;
+
+    auto expect = [&passed](
+        const std::string& name,
+        std::int64_t actual,
+        std::int64_t expected
+    ) {
+        if (actual == expected) {
+            std::cout << "[PASS] "
+                      << name
+                      << " = "
+                      << actual
+                      << "\n";
+            return;
+        }
+
+        std::cout << "[FAIL] "
+                  << name
+                  << " expected "
+                  << expected
+                  << " but got "
+                  << actual
+                  << "\n";
+        passed = false;
+    };
+
+    auto expectCondition = [&passed](
+        const std::string& name,
+        bool condition
+    ) {
+        std::cout << (condition ? "[PASS] " : "[FAIL] ")
+                  << name
+                  << "\n";
+
+        if (!condition) {
+            passed = false;
+        }
+    };
+
+    expect("Memory[472] interrupt handler marker", cpu.state().memory().read(472), 222);
+    expect("Memory[480] flags restored branch marker", cpu.state().memory().read(480), 999);
+    expect("Memory[488] failure branch marker remains zero", cpu.state().memory().read(488), 0);
+
+    expect("R0 interrupt vector", cpu.state().registers().get(RegisterName::R0), 80);
+    expect("R2 restored-path value", cpu.state().registers().get(RegisterName::R2), 999);
+
+    expectCondition("CPU halted after interrupt FLAGS restore test", cpu.state().halted());
+
+    if (!passed) {
+        std::cout << "\nInterrupt FLAGS restore test failed.\n";
+        return 1;
+    }
+
+    std::cout << "\nInterrupt FLAGS restore test finished successfully.\n";
+    return 0;
+}
+
+
+
 int runRegisterIndirectMemoryTest() {
     using namespace zero_cpu;
     using namespace zero_cpu::binary;
@@ -4033,6 +4164,7 @@ void printUsage() {
     std::cout << "  zero_cli cpu-timer-test\n";
     std::cout << "  zero_cli cpu-ei-di-test\n";
     std::cout << "  zero_cli software-interrupt-test\n";
+    std::cout << "  zero_cli interrupt-flags-restore-test\n";
     std::cout << "  zero_cli register-indirect-test\n";
     std::cout << "  zero_cli mini-kernel-syscall-test\n";
     std::cout << "  zero_cli mini-kernel-syscall2-test\n";
@@ -4274,6 +4406,17 @@ int main(int argc, char* argv[]) {
                 }
 
                 return runBioOSDirectory(argv[2]);
+            }
+
+
+            if (command == "interrupt-flags-restore-test") {
+                if (argc != 2) {
+                    std::cerr << "Invalid interrupt-flags-restore-test command.\n\n";
+                    printUsage();
+                    return 1;
+                }
+
+                return runInterruptFlagsRestoreTest();
             }
 
             if (command == "assemble") {

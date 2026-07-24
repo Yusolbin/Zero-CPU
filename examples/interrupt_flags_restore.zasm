@@ -1,0 +1,28 @@
+JMP main
+
+interrupt_handler:
+    MOV R4, 1
+    CMP R4, 2
+
+    MOV R5, 222
+    STORE [472], R5
+
+    IRET
+
+main:
+    MOV R1, 5
+    CMP R1, 5
+
+    INT 80
+
+    JE flags_restored
+
+flags_not_restored:
+    MOV R2, 111
+    STORE [488], R2
+    HALT
+
+flags_restored:
+    MOV R2, 999
+    STORE [480], R2
+    HALT
