@@ -93,6 +93,13 @@ private:
     void stepBinary();
     bool isBinaryPcInCode(std::size_t pc) const;
 
+    Instruction traceInstructionForCurrentBinaryPc() const;
+
+    Operand traceOperandFromEncoded(
+        EncodedOperandType type,
+        std::int64_t payload
+    ) const;
+
     void executeBinaryInstruction(
         const DecodedInstruction& instruction
     );

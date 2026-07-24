@@ -7,9 +7,11 @@
 #include "zero_cpu/binary/BinaryFormat.hpp"
 #include "zero_cpu/binary/BinaryLoader.hpp"
 #include "zero_cpu/isa/InstructionDecoder.hpp"
+#include "zero_cpu/trace/TraceEvent.hpp"
 
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -120,17 +122,45 @@ void CPU::step() {
         return;
     }
 
+    const CPUState before_interrupt = state_;
+
     try {
         if (servicePendingInterruptIfNeeded()) {
+            const std::int64_t vector =
+                state_.registers().get(RegisterName::R0);
+
+            trace_logger_.record(
+                TraceEvent(
+                    before_interrupt,
+                    Instruction(Opcode::INT, Operand::immediate(vector)),
+                    state_
+                )
+            );
+
             return;
         }
     } catch (const std::exception& ex) {
         setRuntimeError(ex.what());
+
+        trace_logger_.record(
+            TraceEvent(
+                before_interrupt,
+                Instruction(Opcode::INT),
+                state_,
+                ex.what()
+            )
+        );
+
         return;
     }
 
     if (has_binary_program_) {
+        const CPUState before = state_;
+        Instruction instruction(Opcode::Invalid);
+        std::string error_message;
+
         try {
+            instruction = traceInstructionForCurrentBinaryPc();
             stepBinary();
 
             if (!state_.halted() && !state_.hasError()) {
@@ -138,7 +168,17 @@ void CPU::step() {
             }
         } catch (const std::exception& ex) {
             setRuntimeError(ex.what());
+            error_message = ex.what();
         }
+
+        trace_logger_.record(
+            TraceEvent(
+                before,
+                instruction,
+                state_,
+                error_message
+            )
+        );
 
         return;
     }
@@ -146,12 +186,28 @@ void CPU::step() {
     const std::size_t pc = state_.pc();
 
     if (pc >= program_.size()) {
-        setRuntimeError("PC out of program range");
+        const CPUState before = state_;
+        const std::string error_message = "PC out of program range";
+
+        setRuntimeError(error_message);
+
+        trace_logger_.record(
+            TraceEvent(
+                before,
+                Instruction(Opcode::Invalid),
+                state_,
+                error_message
+            )
+        );
+
         return;
     }
 
+    const CPUState before = state_;
+    const Instruction instruction = program_[pc];
+    std::string error_message;
+
     try {
-        const Instruction& instruction = program_[pc];
         execute(instruction);
 
         if (!state_.halted() && !state_.hasError()) {
@@ -159,8 +215,19 @@ void CPU::step() {
         }
     } catch (const std::exception& ex) {
         setRuntimeError(ex.what());
+        error_message = ex.what();
     }
+
+    trace_logger_.record(
+        TraceEvent(
+            before,
+            instruction,
+            state_,
+            error_message
+        )
+    );
 }
+
 
 void CPU::run(std::size_t maxSteps) {
     std::size_t count = 0;
@@ -359,6 +426,81 @@ bool CPU::isBinaryPcInCode(std::size_t pc) const {
     }
 
     return ((pc - begin) % binary::kInstructionSize) == 0;
+}
+
+Instruction CPU::traceInstructionForCurrentBinaryPc() const {
+    const std::size_t pc = state_.pc();
+
+    if (!isBinaryPcInCode(pc)) {
+        throw std::runtime_error("Binary PC is outside loaded code section");
+    }
+
+    const std::vector<std::uint8_t> instructionBytes =
+        state_.memory().readBytes(pc, binary::kInstructionSize);
+
+    InstructionDecoder decoder;
+    const DecodedInstruction decoded =
+        decoder.decodeInstruction(instructionBytes);
+
+    const Operand dst =
+        traceOperandFromEncoded(
+            decoded.dst_type,
+            decoded.dst_payload
+        );
+
+    const Operand src =
+        traceOperandFromEncoded(
+            decoded.src_type,
+            decoded.src_payload
+        );
+
+    if (dst.isNone()) {
+        return Instruction(decoded.opcode);
+    }
+
+    if (src.isNone()) {
+        return Instruction(decoded.opcode, dst);
+    }
+
+    return Instruction(decoded.opcode, dst, src);
+}
+
+Operand CPU::traceOperandFromEncoded(
+    EncodedOperandType type,
+    std::int64_t payload
+) const {
+    switch (type) {
+    case EncodedOperandType::None:
+        return Operand::none();
+
+    case EncodedOperandType::Register:
+        return Operand::registerOperand(decodeBinaryRegister(payload));
+
+    case EncodedOperandType::Immediate:
+        return Operand::immediate(payload);
+
+    case EncodedOperandType::MemoryAddress:
+        if (payload < 0) {
+            throw std::runtime_error("Negative binary memory address");
+        }
+
+        return Operand::memoryAddress(static_cast<std::size_t>(payload));
+
+    case EncodedOperandType::RegisterIndirectAddress:
+        return Operand::registerIndirectAddress(decodeBinaryRegister(payload));
+
+    case EncodedOperandType::CodeAddress:
+        if (payload < 0) {
+            throw std::runtime_error("Negative binary code address");
+        }
+
+        return Operand::immediate(
+            binary_code_base_ + static_cast<std::size_t>(payload)
+        );
+
+    default:
+        throw std::runtime_error("Unknown encoded operand type");
+    }
 }
 
 void CPU::executeBinaryInstruction(
